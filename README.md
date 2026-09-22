@@ -37,9 +37,11 @@ If the AI is rate-limited or unreachable, the assistant retries for a few second
 
 ## Putting it on Streamlit Community Cloud
 
-1. Push this folder to a GitHub repository (the `.gitignore` keeps your data and secrets out of it).
+1. Put `app.py` and `requirements.txt` in a GitHub repository, at the top level. Uploading the whole folder also works; the `.gitignore` keeps your data and secrets out.
 2. On [share.streamlit.io](https://share.streamlit.io), create an app from the repo with `app.py` as the main file.
 3. In the app's **Settings → Secrets**, paste the contents of `.streamlit/secrets.toml.example` with your key filled in.
+
+If you see `ModuleNotFoundError`, an older version of the app is still in the repository. Replace `app.py` with this one; it doesn't import anything outside itself except Streamlit.
 
 Two things to know before you do this:
 
@@ -62,21 +64,17 @@ All optional. Values in `.streamlit/secrets.toml` or environment variables take 
 ## What's inside
 
 ```
-app.py                      Streamlit pages and the assistant sidebar
-planner_core/
-  store.py                  database schema, validation, every read and write
-  planning.py               day and week planning (pure functions)
-  capture.py                turns free text into tasks, notes and dates
-  agent.py                  tool definitions, confirmation rules, model loop, basic-mode rules
-  providers.py              AI provider presets, format conversion, retries
-tests/test_core.py          35 tests (standard-library unittest)
+app.py                      the whole app in one file (see below)
+requirements.txt            just streamlit
+tests/test_app.py           35 tests (standard-library unittest)
 run.sh / run.command / run.bat   one-click launchers
 .streamlit/config.toml      theme and settings
 .streamlit/secrets.toml.example
-requirements.txt
 ```
 
-The layers are the same as the Node version: pages → agent → tools → store → SQLite. The model can only act through tools, never SQL.
+**Only `app.py` and `requirements.txt` are needed to run it**, so uploading those two files to GitHub is enough for Streamlit Cloud. Everything else is optional.
+
+`app.py` is organised in sections, in the same layers as the Node version: store (database and rules) → planning → capture → providers (AI connections) → agent (tools, confirmations, model loop) → Streamlit interface. The model can only act through tools, never SQL. Importing the file doesn't start the interface, which is how the tests use it.
 
 **Pages:** Today (capture, plan my day with a time limit, overdue, due, planned, carried over, deadlines), Inbox (with a suggested action per item), Tasks (filters, inline edit), Calendar (week view, plan my week with Apply, weekly review, events), Notes (editor, extract tasks), Projects and Goals (progress bars), Search (includes everything inside a matching project), Settings (AI provider, working hours, remembered facts, recent activity).
 
@@ -87,7 +85,7 @@ The layers are the same as the Node version: pages → agent → tools → store
 ## Tests
 
 ```
-python -m unittest discover -s tests -t .
+python -m unittest discover -s tests
 ```
 
 The tests cover task validation and defaults, dependency loops, all-or-nothing bulk moves, subtasks, projects keeping their work when deleted, goal breakdown and progress, search, day and week planning, the capture parser (including the main example, with no invented deadlines), the confirmation flow, the agent tool loop, fallback when the AI is unavailable, and provider configuration and format conversion.
