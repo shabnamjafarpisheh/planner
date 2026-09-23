@@ -1,105 +1,121 @@
-# Planner (Streamlit edition)
+# Planner · برنامه‌ریز
 
-An AI note and planning assistant. Type whatever is on your mind; it becomes tasks, notes, projects and goals, and the assistant builds a realistic plan for your day and week.
-
-This is the Python/Streamlit version of the app. It has the same planner, capture parser, agent tools, safety rules and free AI options as the Node version, with a Streamlit interface.
+A calm daily planner with an AI assistant, in **English and Persian**, with the **Gregorian or Jalali calendar**, **reminders**, and private **accounts**.
 
 ## Run it
 
-**Easiest:** double-click **run.bat** (Windows) or **run.command** (macOS), or run **./run.sh** (Linux). The first run sets up a private Python environment and installs Streamlit (about a minute); after that it starts straight away and opens your browser.
+**Easiest:** double-click **run.bat** (Windows) or **run.command** (macOS), or run **./run.sh** (Linux). The first run installs Streamlit (about a minute), then your browser opens.
 
-**By hand:**
+**By hand:** `pip install -r requirements.txt`, then `streamlit run app.py`. You need Python 3.10 or newer.
 
-```
-pip install -r requirements.txt
-streamlit run app.py
-```
+**Streamlit Community Cloud:** only `app.py` and `requirements.txt` are needed. Adding `.streamlit/config.toml` is optional.
 
-You need **Python 3.10 or newer** ([python.org](https://www.python.org/downloads/); on Windows tick "Add python.exe to PATH" during setup). The only package is `streamlit`; everything else uses the standard library, including the AI connections.
+## Persian mode · حالت فارسی
 
-Your data is saved in `data/planner.db` (a SQLite file) next to the app.
+Pick **فارسی** at the top of the sign-in page, or later in **Settings → Language and calendar**. The choice is saved with the account.
 
-## Turn the AI on, for free
+- **Layout:** the whole interface is in Persian and reads right to left, using the Vazirmatn font and Persian digits. The day horizon on Today runs right to left too.
+- **Capture:** you can type in Persian. «باید ارائه را تا دوشنبه تمام کنم، فردا به علی زنگ بزنم و ایده: صفحهٔ اول ساده‌تر» becomes two tasks and a note.
+- **Deadlines vs. plans:** «تا دوشنبه» becomes a deadline, «فردا» becomes a planned day, and vague words stay undated.
+- **Dates Planner understands:** امروز، فردا، پس‌فردا, the weekday names, «۳ روز دیگر», «هفتهٔ بعد», and Jalali dates like «۱۵ مهر».
+- **Your wording is kept exactly,** half-spaces included. «کتاب و دفتر بخرم» stays one task, and «شاید …» is saved as an idea, not a task.
+- **The assistant answers in Persian,** both with an AI connected and in basic mode. Basic mode understands requests like «برنامهٔ امروزم را بچین», «چه کارهایی عقب افتاده؟» and «کارهای ناتمام را به فردا منتقل کن». Confirmation messages are in Persian too.
 
-The app works without any AI: capture, plan my day or week, overdue checks, search and "move unfinished tasks to tomorrow" all run on built-in rules. For full natural-language help, open **Settings → AI assistant**, pick a provider, paste a key and press **Test connection**.
+## Jalali calendar · تقویم شمسی
 
-| Provider | Cost | Key | Notes |
-|---|---|---|---|
-| **Google Gemini** (recommended) | Free tier, no card | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | Generous per-minute allowance, so multi-step requests run smoothly. Free-tier prompts may be used by Google to improve its products. |
-| **Groq** | Free tier, no card | [console.groq.com/keys](https://console.groq.com/keys) | Very fast; the small free per-minute token allowance can throttle long requests. |
-| **Ollama** | Free, offline | none | Runs on your own computer: install [Ollama](https://ollama.com), then `ollama pull llama3.1`. Small models handle multi-step requests less reliably. Doesn't work on Streamlit Cloud. |
-| **Other OpenAI-compatible** | varies | varies | OpenRouter, LM Studio and similar. Enter the URL and model. |
-| **Anthropic Claude** | Paid | [console.anthropic.com](https://console.anthropic.com/) | Best quality. |
+You can use it with either language; choosing Persian switches it on by default.
 
-Free tiers and model names change often. If a model stops working you'll see a clear message and can change the model name in Settings.
+- **Dates everywhere** appear in Jalali, for example «سه‌شنبه ۳۱ شهریور ۱۴۰۵», or "Tuesday, 31 Shahrivar" in English.
+- **Date pickers** become day / month / year lists in Jalali, because Streamlit's own picker only knows the Gregorian calendar.
+- **Weeks** start on **Saturday**, and **Friday** is the day off, so plans never land on it.
+- **Accuracy:** the conversion was checked day by day against the `jdatetime` library for 1950–2100 (55,152 days, no differences), including leap years.
 
-If the AI is rate-limited or unreachable, the assistant retries for a few seconds and then answers with the built-in rules, telling you why, instead of failing.
+Dates are still stored in the standard Gregorian format underneath, so switching calendars never changes your data.
 
-## Putting it on Streamlit Community Cloud
+## Reminders · یادآورها
 
-1. Put `app.py` and `requirements.txt` in a GitHub repository, at the top level. Uploading the whole folder also works; the `.gitignore` keeps your data and secrets out.
-2. On [share.streamlit.io](https://share.streamlit.io), create an app from the repo with `app.py` as the main file.
-3. In the app's **Settings → Secrets**, paste the contents of `.streamlit/secrets.toml.example` with your key filled in.
+A Streamlit app can't send anything while it's closed, so there are two routes. Both are in **Settings → Reminders**.
 
-If you see `ModuleNotFoundError`, an older version of the app is still in the repository. Replace `app.py` with this one; it doesn't import anything outside itself except Streamlit.
+1. **Browser reminders while Planner is open.**
+   - Press **Allow notifications** once; **Send a test** shows what they look like.
+   - You're notified before each meeting and each task that has a time. Choose 5, 10, 15, 30 or 60 minutes ahead.
+   - An optional morning summary tells you how many tasks, meetings and overdue items you have.
+   - Works in desktop browsers (Chrome, Edge, Firefox, Safari). Phones generally don't allow this for websites.
 
-Two things to know before you do this:
+2. **Your phone's calendar, even when Planner is closed.**
+   - **Add to my phone calendar** (under a day plan), **Add week to my calendar** (Week page), or **Today and tomorrow (.ics)** (Settings) downloads a calendar file.
+   - Open it on your phone. Your calendar app adds each meeting and timed task with an alarm and reminds you on time.
+   - Downloading again after you change the plan updates the same items instead of duplicating them.
 
-- **Data doesn't survive restarts there.** Community Cloud's disk is temporary, so `data/planner.db` is wiped whenever the app restarts or goes to sleep. Use it for trying things out, or run locally for real use.
-- **Anyone with the link can use it.** The app is single-user with no login. In the Cloud app settings, restrict who can view it, and put the key in Secrets rather than typing it into the Settings page.
+**Tasks get a time** when you press **Save this plan to today** (each task keeps the start time from the plan), or when you set one under **Edit** on the Tasks page. Moving a task to another day clears its old time.
 
-## Settings you can put in secrets or the environment
+## Shared tasks · کارهای مشترک
 
-All optional. Values in `.streamlit/secrets.toml` or environment variables take priority over the Settings page, which then shows as read-only.
+Two people with accounts can work on the same task.
 
-| Name | Purpose |
-|---|---|
-| `AI_PROVIDER` | `none`, `gemini`, `groq`, `ollama`, `openai_compatible` or `anthropic` |
-| `AI_API_KEY` | Key for that provider |
-| `AI_MODEL` | Model name; defaults per provider (e.g. `gemini-2.5-flash`) |
-| `AI_BASE_URL` | Only for `openai_compatible` or a custom address |
-| `ANTHROPIC_API_KEY` | Shortcut that selects Anthropic |
-| `DATABASE_PATH` | Where the SQLite file lives (default `data/planner.db`) |
+- **Share it:** open a task, press **Edit**, enter the other person's email and choose what they can do — **editor** (change and finish it) or **viewer** (look only). They need an account with that email.
+- **Both see it.** It appears in their task list, their day plan and their searches, marked **From Ana**; on your side it's marked **Shared with Nima**.
+- **Either editor can finish it,** and it's done for both at once.
+- **Only the owner** can delete it or share it further. Anyone shared with can remove it from their own list.
+- **A nudge** ("Send a nudge") gives everyone else on the task a friendly reminder.
+- **Nothing else is exposed.** Sharing one task shares exactly that task: not your other tasks, your notes, your projects or your AI key. There are tests for this.
+- **The assistant can share too** ("share the venue task with ana@example.com"), but sharing always waits for your confirmation first, and it never invents an email address.
 
-## What's inside
+### Updates between people
 
-```
-app.py                      the whole app in one file (see below)
-requirements.txt            just streamlit
-tests/test_app.py           35 tests (standard-library unittest)
-run.sh / run.command / run.bat   one-click launchers
-.streamlit/config.toml      theme and settings
-.streamlit/secrets.toml.example
-```
+The **Shared** page shows what happened: who shared something with you, who finished a shared task, and who nudged you. The sidebar shows how many are unread.
 
-**Only `app.py` and `requirements.txt` are needed to run it**, so uploading those two files to GitHub is enough for Streamlit Cloud. Everything else is optional.
+If browser reminders are on (see below), these updates also arrive as notifications while Planner is open, each one only once.
 
-`app.py` is organised in sections, in the same layers as the Node version: store (database and rules) → planning → capture → providers (AI connections) → agent (tools, confirmations, model loop) → Streamlit interface. The model can only act through tools, never SQL. Importing the file doesn't start the interface, which is how the tests use it.
+## Accounts
 
-**Pages:** Today (capture, plan my day with a time limit, overdue, due, planned, carried over, deadlines), Inbox (with a suggested action per item), Tasks (filters, inline edit), Calendar (week view, plan my week with Apply, weekly review, events), Notes (editor, extract tasks), Projects and Goals (progress bars), Search (includes everything inside a matching project), Settings (AI provider, working hours, remembered facts, recent activity).
+- **Sign in or create an account**; each person's data, AI key and settings are completely separate.
+- **Passwords** are stored as salted PBKDF2-SHA256 hashes.
+- **Failed sign-ins:** after 5 wrong tries, the account waits 10 minutes.
+- **"Keep me signed in"** lasts 30 days. Changing the password signs out other devices.
+- **Settings → Account** lets you rename yourself, change the password, or delete the account.
 
-**Safety rules:** deleting anything, moving more than two tasks at once, or applying more than three schedule changes waits for you to press **Confirm** in the sidebar. Dates are never invented; vague wording like "soon" leaves the date empty. Plans list their assumptions separately.
+Data from the earlier single-user version moves automatically to the first account created.
 
-**Realistic planning:** only about 65% of free time is planned, tasks get 10-minute buffers, a 15-minute break follows long stretches of work, meetings are planned around, tasks without estimates count as 30 minutes (and the plan says so), and the week planner spreads non-urgent work toward deadlines instead of piling it onto today.
+## Free AI
+
+In **Settings → AI assistant**, pick a provider, paste a key and press **Test connection**:
+- **Google Gemini** has a free tier with no card needed: get a key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
+- **Groq** is also free, at [console.groq.com/keys](https://console.groq.com/keys).
+- **Ollama** is free and runs offline on your own computer.
+- Any OpenAI-compatible service or Anthropic also work.
+
+Without a provider, basic mode still handles capture, planning, overdue checks, moving tasks and search in both languages. When Persian is on, the AI is told to reply in Persian. With the Jalali calendar, it's told to use weekday names rather than converting dates itself, so it can't get a Jalali date wrong.
+
+## Before you share it on Streamlit Community Cloud
+
+- **Accounts and data are wiped whenever the app restarts or sleeps,** because Community Cloud's disk is temporary. For everyday use, run it on your own computer or a server with a permanent disk (set `DATABASE_PATH`).
+- **Anyone with the link can create an account;** restrict viewers in the Cloud app's settings.
+- **Browser reminders** need the Planner tab to stay open.
+- **Sharing needs both people on the same Planner,** so on Community Cloud they'd share an app whose data is wiped on restart. For real shared use, run it somewhere with a permanent disk.
 
 ## Tests
 
-```
-python -m unittest discover -s tests
-```
+`python -m unittest discover -s tests` runs 81 tests, covering:
+- The Jalali conversion, leap years and date formatting.
+- Persian capture: dates, deadlines, splitting on «و», and ideas.
+- Saturday weeks with Friday off.
+- Persian replies and confirmations.
+- Plan times and reminder timing.
+- Calendar files: escaping, line folding, alarms, stable ids.
+- Accounts, lockout and sessions.
+- Isolation between accounts.
+- Sharing: who can see, change, finish, delete and re-share; viewers being read-only; nudges; updates counted and delivered once; and that sharing one task leaks nothing else.
+- Planning, the agent and the AI providers.
 
-The tests cover task validation and defaults, dependency loops, all-or-nothing bulk moves, subtasks, projects keeping their work when deleted, goal breakdown and progress, search, day and week planning, the capture parser (including the main example, with no invented deadlines), the confirmation flow, the agent tool loop, fallback when the AI is unavailable, and provider configuration and format conversion.
-
-## Differences from the Node version
-
-- Search uses simple text matching rather than SQLite full-text search, so it doesn't rank results or match word stems.
-- Tags are stored as a comma-separated list on each task and note rather than in their own table.
-- The interface follows Streamlit's layout: pages in the sidebar, the assistant underneath, and a page reload after each action.
-- There's no access token; on a shared server, use Streamlit Cloud's viewer restrictions or put it behind your own login.
+The code also compiles on Python 3.10, since Streamlit Cloud may use an older Python.
 
 ## Known limitations
 
-- One user per database.
-- No sync with outside calendars; events are entered in the app.
-- Basic mode understands a fixed set of requests; free-form conversation needs a provider.
-- A key typed into the Settings page is stored as plain text in your local database file; keep that file private.
+- There's no password-reset email.
+- Browser notifications don't work on most phones; use the calendar file there.
+- On phones, the menu stays open after choosing a page; tap the arrow to close it.
+- Persian capture understands common phrasing. For anything more complex, connect the AI.
+- Sharing tells you if an email has no account yet, which reveals whether that address is registered. That suits a small, trusted group.
+- Projects, notes and goals aren't shareable yet, only tasks.
+- Planner reasons (like «مهلت: دوشنبه») are shown in Persian, but a few rare messages that come straight from an AI provider (for example error details) may appear in English.

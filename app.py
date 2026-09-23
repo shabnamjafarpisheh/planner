@@ -1,15 +1,153 @@
-"""Planner: an AI note and planning assistant for Streamlit, with accounts.
+"""Planner: a calm AI day planner for Streamlit, in English and Persian.
 
-Everything is in this one file, so it runs as long as app.py and
+Accounts, shared tasks, Jalali or Gregorian calendar, reminders, and an AI
+assistant. Everything is in this one file, so it runs as long as app.py and
 requirements.txt are present (for example on Streamlit Community Cloud).
 
 Run with:  streamlit run app.py
 
-Sections, in order: store (accounts, database, rules) -> planning ->
-capture -> providers (AI connections) -> agent -> Streamlit interface.
+Sections, in order: locale (Jalali, Persian digits) -> store (accounts,
+sharing, database, rules) -> planning -> capture -> providers (AI connections)
+-> notify (reminders, calendar files) -> agent -> Streamlit interface.
 """
 from __future__ import annotations
 
+
+
+# ======================================================================
+# locale
+# ======================================================================
+
+from datetime import date as _date
+
+FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+TO_ASCII = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+JALALI_MONTHS_FA = ["فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
+                    "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند"]
+JALALI_MONTHS_EN = ["Farvardin", "Ordibehesht", "Khordad", "Tir", "Mordad", "Shahrivar",
+                    "Mehr", "Aban", "Azar", "Dey", "Bahman", "Esfand"]
+GREG_MONTHS_FA = ["ژانویه", "فوریه", "مارس", "آوریل", "مه", "ژوئن",
+                  "ژوئیه", "اوت", "سپتامبر", "اکتبر", "نوامبر", "دسامبر"]
+GREG_MONTHS_EN = ["January", "February", "March", "April", "May", "June",
+                  "July", "August", "September", "October", "November", "December"]
+# Python's weekday(): Monday is 0.
+WEEKDAYS_FA = ["دوشنبه", "سه‌شنبه", "چهارشنبه", "پنج‌شنبه", "جمعه", "شنبه", "یکشنبه"]
+WEEKDAYS_EN = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+def fa_digits(text) -> str:
+    return str(text).translate(FA_DIGITS)
+
+
+def ascii_digits(text) -> str:
+    return str(text).translate(TO_ASCII)
+
+
+# ------------------------------------------------------------------ Jalali
+def g2j(gy: int, gm: int, gd: int):
+    """Gregorian -> Jalali (year, month, day)."""
+    g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+    gy2 = gy + 1 if gm > 2 else gy
+    days = (355666 + 365 * gy + (gy2 + 3) // 4 - (gy2 + 99) // 100 + (gy2 + 399) // 400
+            + gd + g_d_m[gm - 1])
+    jy = -1595 + 33 * (days // 12053)
+    days %= 12053
+    jy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        jy += (days - 1) // 365
+        days = (days - 1) % 365
+    if days < 186:
+        return jy, 1 + days // 31, 1 + days % 31
+    return jy, 7 + (days - 186) // 30, 1 + (days - 186) % 30
+
+
+def j2g(jy: int, jm: int, jd: int):
+    """Jalali -> Gregorian (year, month, day)."""
+    jy += 1595
+    days = (-355668 + 365 * jy + (jy // 33) * 8 + ((jy % 33) + 3) // 4 + jd
+            + ((jm - 1) * 31 if jm < 7 else (jm - 7) * 30 + 186))
+    gy = 400 * (days // 146097)
+    days %= 146097
+    if days > 36524:
+        days -= 1
+        gy += 100 * (days // 36524)
+        days %= 36524
+        if days >= 365:
+            days += 1
+    gy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        gy += (days - 1) // 365
+        days = (days - 1) % 365
+    gd = days + 1
+    leap = (gy % 4 == 0 and gy % 100 != 0) or gy % 400 == 0
+    month_len = [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    gm = 0
+    while gm < 12 and gd > month_len[gm]:
+        gd -= month_len[gm]
+        gm += 1
+    return gy, gm + 1, gd
+
+
+def jalali_month_length(jy: int, jm: int) -> int:
+    if jm <= 6:
+        return 31
+    if jm <= 11:
+        return 30
+    # Esfand has 30 days in a leap year: check whether 30 Esfand round-trips.
+    return 30 if g2j(*j2g(jy, 12, 30)) == (jy, 12, 30) else 29
+
+
+def iso_to_jalali(iso: str):
+    d = _date.fromisoformat(iso)
+    return g2j(d.year, d.month, d.day)
+
+
+def jalali_to_iso(jy: int, jm: int, jd: int) -> str:
+    if not (1 <= jm <= 12) or not (1 <= jd <= jalali_month_length(jy, jm)):
+        raise ValueError(f"{jy}/{jm}/{jd} is not a Jalali date")
+    return _date(*j2g(jy, jm, jd)).isoformat()
+
+
+# ------------------------------------------------------------------ formatting
+def weekday_label(iso: str, lang: str) -> str:
+    wd = _date.fromisoformat(iso).weekday()
+    return WEEKDAYS_FA[wd] if lang == "fa" else WEEKDAYS_EN[wd]
+
+
+def format_date(iso: str, lang: str = "en", calendar: str = "gregorian",
+                with_year: bool = False, with_weekday: bool = False) -> str:
+    """'22 September' / 'September 22' / '۳۱ شهریور' / '31 Shahrivar', etc."""
+    if not iso:
+        return ""
+    d = _date.fromisoformat(iso)
+    if calendar == "jalali":
+        jy, jm, jd = g2j(d.year, d.month, d.day)
+        month = (JALALI_MONTHS_FA if lang == "fa" else JALALI_MONTHS_EN)[jm - 1]
+        text = f"{jd} {month}" + (f" {jy}" if with_year else "")
+    elif lang == "fa":
+        text = f"{d.day} {GREG_MONTHS_FA[d.month - 1]}" + (f" {d.year}" if with_year else "")
+    else:
+        text = f"{GREG_MONTHS_EN[d.month - 1]} {d.day}" + (f", {d.year}" if with_year else "")
+    if with_weekday:
+        wd = weekday_label(iso, lang)
+        text = f"{wd} {text}" if lang == "fa" else f"{wd}, {text}"
+    return fa_digits(text) if lang == "fa" else text
+
+
+def short_day(iso: str, lang: str = "en", calendar: str = "gregorian") -> str:
+    """Day-of-month number in the chosen calendar, for week columns."""
+    d = _date.fromisoformat(iso)
+    n = g2j(d.year, d.month, d.day)[2] if calendar == "jalali" else d.day
+    return fa_digits(n) if lang == "fa" else str(n)
+
+
+def month_span(start_iso: str, end_iso: str, lang: str, calendar: str) -> str:
+    a = format_date(start_iso, lang, calendar)
+    b = format_date(end_iso, lang, calendar, with_year=True)
+    return f"{a} تا {b}" if lang == "fa" else f"{a} to {b}"
 
 
 # ======================================================================
@@ -30,7 +168,7 @@ DEFAULT_ESTIMATE_MIN = 30
 STATUSES = ["inbox", "planned", "in_progress", "completed", "cancelled"]
 PRIORITIES = {1: "Urgent", 2: "High", 3: "Normal", 4: "Low"}
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 # Password hashing: PBKDF2-SHA256 at the OWASP-recommended work factor.
 # Stored per user so the factor can be raised later without breaking logins.
@@ -82,9 +220,21 @@ def weekday_name(value: str) -> str:
     return WEEKDAYS[parse_iso(value).weekday()]
 
 
-def week_start(value: str) -> str:
+def week_start(value: str, first: int = 0) -> str:
+    """Start of the week containing value. first: 0 = Monday, 5 = Saturday."""
     d = parse_iso(value)
-    return (d - timedelta(days=d.weekday())).isoformat()
+    return (d - timedelta(days=(d.weekday() - first) % 7)).isoformat()
+
+
+HHMM_RE = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
+
+
+def check_time(value, field="time"):
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str) or not HHMM_RE.fullmatch(value):
+        raise ValidationError(f'"{value}" is not a time. Use HH:MM, for example 09:30.')
+    return value
 
 
 def to_min(hhmm: str) -> int:
@@ -195,6 +345,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   priority INTEGER NOT NULL DEFAULT 3 CHECK (priority BETWEEN 1 AND 4),
   due_date TEXT,
   scheduled_date TEXT,
+  scheduled_time TEXT,
   estimate_min INTEGER,
   project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
   goal_id INTEGER REFERENCES goals(id) ON DELETE SET NULL,
@@ -203,6 +354,27 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   completed_at TEXT
 );
+CREATE TABLE IF NOT EXISTS task_shares (
+  task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'editor' CHECK (role IN ('editor','viewer')),
+  shared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (task_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  from_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL,
+  task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+  title TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  read_at TEXT,
+  delivered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_shares_user ON task_shares(user_id);
+CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, read_at);
 CREATE TABLE IF NOT EXISTS task_dependencies (
   task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   depends_on_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -272,7 +444,16 @@ CREATE INDEX IF NOT EXISTS idx_notes_user ON notes(user_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_events_user_date ON events(user_id, date);
 """
 
-DEFAULT_SETTINGS = {"workday_start": "09:00", "workday_end": "18:00"}
+DEFAULT_SETTINGS = {
+    "workday_start": "09:00", "workday_end": "18:00",
+    "lang": "en",               # en | fa
+    "calendar": "gregorian",    # gregorian | jalali
+    "remind_enabled": "0",      # browser reminders while the app is open
+    "remind_lead": "10",        # minutes before a meeting or planned task
+    "remind_morning": "",       # HH:MM for a start-of-day summary, or empty
+}
+LANGS = ("en", "fa")
+CALENDARS = ("gregorian", "jalali")
 LEGACY_TABLES = ["settings", "goals", "projects", "tasks", "task_dependencies", "notes",
                  "events", "inbox_items", "memories", "activity", "messages", "pending_actions"]
 
@@ -310,6 +491,8 @@ def connect(path: str = "data/planner.db") -> sqlite3.Connection:
     _set_aside_legacy(conn)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    if "scheduled_time" not in _columns(conn, "tasks"):  # added in version 4
+        conn.execute("ALTER TABLE tasks ADD COLUMN scheduled_time TEXT")
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
     return conn
@@ -566,6 +749,32 @@ class Store:
             c.execute("INSERT INTO settings (user_id, key, value) VALUES (?, ?, ?) "
                       "ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value", (self.uid, key, value))
 
+    def update_preferences(self, lang=None, calendar=None):
+        if lang is not None:
+            if lang not in LANGS:
+                raise ValidationError("Unknown language")
+            self.set_setting("lang", lang)
+        if calendar is not None:
+            if calendar not in CALENDARS:
+                raise ValidationError("Unknown calendar")
+            self.set_setting("calendar", calendar)
+
+    def update_reminders(self, enabled, lead, morning):
+        lead = int(lead)
+        if not 0 <= lead <= 120:
+            raise ValidationError("Choose between 0 and 120 minutes.")
+        self.set_setting("remind_enabled", "1" if enabled else "0")
+        self.set_setting("remind_lead", str(lead))
+        self.set_setting("remind_morning", check_time(morning, "morning time") or "")
+
+    def week_first(self):
+        """Jalali weeks start on Saturday; Gregorian ones on Monday."""
+        return 5 if self.get_settings()["calendar"] == "jalali" else 0
+
+    def weekend(self):
+        """Days off, as Python weekday numbers (Monday is 0)."""
+        return (4,) if self.get_settings()["calendar"] == "jalali" else (5, 6)
+
     def update_hours(self, start, end):
         if to_min(end) <= to_min(start):
             raise ValidationError("The end of the workday must be after the start.")
@@ -722,7 +931,7 @@ class Store:
 
     def create_task(self, title, description="", status=None, priority=3, due_date=None,
                     scheduled_date=None, estimate_min=None, project=None, project_id=None,
-                    goal_id=None, parent_id=None, tags=None):
+                    goal_id=None, parent_id=None, tags=None, scheduled_time=None):
         title = clean_text(title, "Task", 200)
         if status is None:
             status = "planned" if (due_date or scheduled_date) else "inbox"
@@ -746,18 +955,39 @@ class Store:
         with self.tx() as c:
             cur = c.execute(
                 "INSERT INTO tasks (user_id, title, description, status, priority, due_date, scheduled_date, "
-                "estimate_min, project_id, goal_id, parent_id, tags) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "scheduled_time, estimate_min, project_id, goal_id, parent_id, tags) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (self.uid, title, clean_text(description, "description", 4000, False), status, priority,
-                 due_date or None, scheduled_date or None, estimate_min, project_id, goal_id, parent_id,
-                 norm_tags(tags)))
+                 due_date or None, scheduled_date or None, check_time(scheduled_time) if scheduled_date else None,
+                 estimate_min, project_id, goal_id, parent_id, norm_tags(tags)))
             self.log("create_task", title)
         return self.get_task(cur.lastrowid)
 
-    def get_task(self, tid):
+    # A task is yours, or someone shared it with you. Both can see it; only an
+    # owner or an editor can change it.
+    SHARED = ("(t.user_id = ? OR t.id IN (SELECT task_id FROM task_shares WHERE user_id = ?))")
+
+    def _decorate(self, t):
+        """Adds who owns a shared task, who it's shared with, and what you may do."""
+        if not t:
+            return t
+        t["mine"] = t["user_id"] == self.uid
+        t["can_edit"] = t["mine"] or bool(self._one(
+            "SELECT 1 AS ok FROM task_shares WHERE task_id = ? AND user_id = ? AND role = 'editor'", (t["id"], self.uid)))
+        t["shared_with"] = self._q(
+            "SELECT s.user_id, s.role, u.name, u.email FROM task_shares s JOIN users u ON u.id = s.user_id "
+            "WHERE s.task_id = ? ORDER BY u.name", (t["id"],))
+        owner = self._one("SELECT name, email FROM users WHERE id = ?", (t["user_id"],))
+        t["owner_name"] = (owner or {}).get("name") or (owner or {}).get("email", "")
+        return t
+
+    def get_task(self, tid, for_edit=False):
         t = self._one("SELECT t.*, p.name AS project_name FROM tasks t LEFT JOIN projects p ON p.id = t.project_id "
-                      "WHERE t.id = ? AND t.user_id = ?", (tid, self.uid))
+                      f"WHERE t.id = ? AND {self.SHARED}", (tid, self.uid, self.uid))
         if not t:
             raise NotFound(f"No task with id {tid}")
+        t = self._decorate(t)
+        if for_edit and not t["can_edit"]:
+            raise ValidationError("This task was shared with you to read, not to change.")
         t["subtasks"] = self._q("SELECT * FROM tasks WHERE parent_id = ? AND user_id = ? ORDER BY id", (tid, self.uid))
         t["blocked_by"] = self._q("SELECT t.id, t.title, t.status FROM task_dependencies d "
                                   "JOIN tasks t ON t.id = d.depends_on_id WHERE d.task_id = ? AND t.user_id = ?",
@@ -765,10 +995,12 @@ class Store:
         return t
 
     def list_tasks(self, status=None, open_only=False, project_id=None, goal_id=None,
-                   due_before=None, scheduled_on=None, query=None, limit=500):
+                   due_before=None, scheduled_on=None, query=None, limit=500, include_shared=True):
         sql = ("SELECT t.*, p.name AS project_name FROM tasks t LEFT JOIN projects p ON p.id = t.project_id "
+               f"WHERE {self.SHARED}") if include_shared else (
+               "SELECT t.*, p.name AS project_name FROM tasks t LEFT JOIN projects p ON p.id = t.project_id "
                "WHERE t.user_id = ?")
-        args = [self.uid]
+        args = [self.uid, self.uid] if include_shared else [self.uid]
         if status:
             status = [status] if isinstance(status, str) else list(status)
             sql += f" AND t.status IN ({','.join('?' * len(status))})"
@@ -792,13 +1024,13 @@ class Store:
             args += [f"%{query}%"] * 3
         sql += " ORDER BY t.status = 'completed', t.priority, t.due_date IS NULL, t.due_date, t.id DESC LIMIT ?"
         args.append(limit)
-        return self._q(sql, args)
+        return [self._decorate(t) for t in self._q(sql, args)]
 
     def update_task(self, tid, **fields):
-        current = self.get_task(tid)
+        current = self.get_task(tid, for_edit=True)
         allowed = {k: v for k, v in fields.items() if k in (
             "title", "description", "status", "priority", "due_date", "scheduled_date",
-            "estimate_min", "project_id", "goal_id", "tags")}
+            "scheduled_time", "estimate_min", "project_id", "goal_id", "tags")}
         if "project" in fields and "project_id" not in allowed:
             p = self.project_by_name(fields["project"])
             allowed["project_id"] = p["id"] if p else None
@@ -812,6 +1044,10 @@ class Store:
             if f in allowed:
                 check_date(allowed[f], f)
                 allowed[f] = allowed[f] or None
+        if "scheduled_time" in allowed:
+            allowed["scheduled_time"] = check_time(allowed["scheduled_time"])
+        elif "scheduled_date" in allowed and allowed["scheduled_date"] != current["scheduled_date"]:
+            allowed["scheduled_time"] = None  # a time from the old day no longer applies
         if "priority" in allowed and int(allowed["priority"]) not in PRIORITIES:
             raise ValidationError("Priority must be 1 (urgent) to 4 (low)")
         if "tags" in allowed:
@@ -826,12 +1062,16 @@ class Store:
             allowed["completed_at"] = None
         sets = ", ".join(f"{k} = ?" for k in allowed)
         with self.tx() as c:
-            c.execute(f"UPDATE tasks SET {sets} WHERE id = ? AND user_id = ?", (*allowed.values(), tid, self.uid))
+            c.execute(f"UPDATE tasks SET {sets} WHERE id = ?", (*allowed.values(), tid))
             self.log("update_task", str(tid))
-        return self.get_task(tid)
+        done = allowed.get("status") == "completed" and current["status"] != "completed"
+        out = self.get_task(tid)
+        if done:
+            self._tell_others(out, "completed")
+        return out
 
     def complete_task(self, tid):
-        t = self.get_task(tid)
+        t = self.get_task(tid, for_edit=True)
         waiting = [d for d in t["blocked_by"] if d["status"] not in ("completed", "cancelled")]
         result = self.update_task(tid, status="completed")
         result["warning"] = f"Note: this was waiting on {waiting[0]['title']}, which isn't done." if waiting else None
@@ -846,22 +1086,26 @@ class Store:
         return self.update_task(tid, scheduled_date=date,
                                 status="planned" if t["status"] == "inbox" else t["status"])
 
-    def bulk_reschedule(self, ids, date):
+    def bulk_reschedule(self, ids, date, times=None):
+        """Move tasks to a date, optionally at given start times ({id: "HH:MM"})."""
         check_date(date, "date", required=True)
         ids = [int(i) for i in ids]
+        times = {int(k): check_time(v) for k, v in (times or {}).items()}
         if not ids:
             raise ValidationError("No tasks given")
         with self.tx() as c:
             for tid in ids:
-                if not self._one("SELECT id FROM tasks WHERE id = ? AND user_id = ?", (tid, self.uid)):
-                    raise NotFound(f"No task with id {tid}")  # rolls the whole move back
-                c.execute("UPDATE tasks SET scheduled_date = ?, status = CASE WHEN status = 'inbox' "
-                          "THEN 'planned' ELSE status END WHERE id = ? AND user_id = ?", (date, tid, self.uid))
+                self.get_task(tid, for_edit=True)  # yours, or shared with you as an editor
+                c.execute("UPDATE tasks SET scheduled_date = ?, scheduled_time = ?, status = CASE WHEN status = 'inbox' "
+                          "THEN 'planned' ELSE status END WHERE id = ?", (date, times.get(tid), tid))
             self.log("bulk_reschedule", f"{len(ids)} tasks to {date}")
         return {"moved": len(ids), "date": date, "ids": ids}
 
     def delete_task(self, tid):
         t = self.get_task(tid)
+        if not t["mine"]:
+            raise ValidationError("Only the person who created a shared task can delete it. "
+                                  "You can remove it from your list instead.")
         with self.tx() as c:
             c.execute("DELETE FROM tasks WHERE id = ? AND user_id = ?", (tid, self.uid))
             self.log("delete_task", t["title"])
@@ -905,6 +1149,117 @@ class Store:
             c.execute("INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_id) VALUES (?, ?)",
                       (task_id, depends_on_id))
         return self.get_task(task_id)
+
+    # ------------------------------------------------------------ sharing
+    def _user_by_email(self, email):
+        email = clean_text(email, "Email", 254).lower()
+        return self._one("SELECT id, name, email FROM users WHERE email = ?", (email,))
+
+    def share_task(self, tid, email, role="editor"):
+        """Let someone else see (and usually change) one of your tasks."""
+        if role not in ("editor", "viewer"):
+            raise ValidationError("Choose editor or viewer.")
+        t = self.get_task(tid)
+        if not t["mine"]:
+            raise ValidationError("Only the person who created a task can share it.")
+        other = self._user_by_email(email)
+        if not other:
+            raise ValidationError("No account uses that email yet. Ask them to create one first.")
+        if other["id"] == self.uid:
+            raise ValidationError("That's your own account.")
+        with self.tx() as c:
+            c.execute("INSERT INTO task_shares (task_id, user_id, role, shared_by) VALUES (?, ?, ?, ?) "
+                      "ON CONFLICT(task_id, user_id) DO UPDATE SET role = excluded.role",
+                      (tid, other["id"], role, self.uid))
+            self.log("share_task", f"{t['title']} -> {other['email']}")
+        self._notify(other["id"], "shared", t["title"], tid)
+        return {"task": self.get_task(tid), "shared_with": other["email"], "role": role}
+
+    def unshare_task(self, tid, user_id):
+        """The owner removes someone; anyone can remove themselves."""
+        t = self.get_task(tid)
+        user_id = int(user_id)
+        if not t["mine"] and user_id != self.uid:
+            raise ValidationError("You can only remove yourself from a shared task.")
+        with self.tx() as c:
+            c.execute("DELETE FROM task_shares WHERE task_id = ? AND user_id = ?", (tid, user_id))
+            self.log("unshare_task", str(tid))
+        return {"task_id": tid, "removed": user_id}
+
+    def shared_with_me(self, open_only=True):
+        rows = self._q("SELECT t.*, p.name AS project_name FROM tasks t LEFT JOIN projects p ON p.id = t.project_id "
+                       "JOIN task_shares s ON s.task_id = t.id WHERE s.user_id = ?"
+                       + (" AND t.status IN ('inbox','planned','in_progress')" if open_only else "")
+                       + " ORDER BY t.due_date IS NULL, t.due_date, t.id DESC", (self.uid,))
+        return [self._decorate(t) for t in rows]
+
+    def shared_by_me(self, open_only=True):
+        rows = self._q("SELECT DISTINCT t.*, p.name AS project_name FROM tasks t LEFT JOIN projects p ON p.id = t.project_id "
+                       "JOIN task_shares s ON s.task_id = t.id WHERE t.user_id = ?"
+                       + (" AND t.status IN ('inbox','planned','in_progress')" if open_only else "")
+                       + " ORDER BY t.due_date IS NULL, t.due_date, t.id DESC", (self.uid,))
+        return [self._decorate(t) for t in rows]
+
+    def people_i_share_with(self):
+        return self._q("SELECT DISTINCT u.email, u.name FROM task_shares s JOIN users u ON u.id = s.user_id "
+                       "WHERE s.task_id IN (SELECT id FROM tasks WHERE user_id = ?) ORDER BY u.name", (self.uid,))
+
+    def nudge(self, tid):
+        """A gentle 'remember this one' to everyone else on a shared task."""
+        t = self.get_task(tid)
+        others = self._tell_others(t, "nudge")
+        if not others:
+            raise ValidationError("This task isn't shared with anyone yet.")
+        return {"sent_to": others}
+
+    # ------------------------------------------------------------ notifications
+    def _notify(self, user_id, kind, title, task_id=None):
+        if int(user_id) == self.uid:
+            return
+        with self.tx() as c:
+            c.execute("INSERT INTO notifications (user_id, from_user_id, kind, task_id, title) VALUES (?, ?, ?, ?, ?)",
+                      (int(user_id), self.uid, kind, task_id, title[:200]))
+
+    def _tell_others(self, task, kind):
+        """Everyone on a shared task except whoever did the thing."""
+        people = [s["user_id"] for s in task.get("shared_with", [])] + [task["user_id"]]
+        others = [p for p in dict.fromkeys(people) if p != self.uid]
+        for uid in others:
+            self._notify(uid, kind, task["title"], task["id"])
+        return others
+
+    def list_notifications(self, limit=30):
+        return self._q("SELECT n.*, u.name AS from_name, u.email AS from_email FROM notifications n "
+                       "LEFT JOIN users u ON u.id = n.from_user_id WHERE n.user_id = ? "
+                       "ORDER BY n.id DESC LIMIT ?", (self.uid, limit))
+
+    def unread_count(self):
+        return self._one("SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND read_at IS NULL",
+                         (self.uid,))["n"]
+
+    def mark_notifications_read(self, ids=None):
+        with self.tx() as c:
+            if ids:
+                marks = ",".join("?" * len(ids))
+                c.execute(f"UPDATE notifications SET read_at = datetime('now') WHERE user_id = ? AND id IN ({marks})",
+                          (self.uid, *[int(i) for i in ids]))
+            else:
+                c.execute("UPDATE notifications SET read_at = datetime('now') WHERE user_id = ? AND read_at IS NULL",
+                          (self.uid,))
+
+    def undelivered_notifications(self):
+        """New updates that haven't been shown as a browser notification yet."""
+        return self._q("SELECT n.*, u.name AS from_name, u.email AS from_email FROM notifications n "
+                       "LEFT JOIN users u ON u.id = n.from_user_id "
+                       "WHERE n.user_id = ? AND n.delivered_at IS NULL ORDER BY n.id", (self.uid,))
+
+    def mark_delivered(self, ids):
+        if not ids:
+            return
+        marks = ",".join("?" * len(ids))
+        with self.tx() as c:
+            c.execute(f"UPDATE notifications SET delivered_at = datetime('now') WHERE user_id = ? AND id IN ({marks})",
+                      (self.uid, *[int(i) for i in ids]))
 
     def overdue_tasks(self, today):
         return self.list_tasks(open_only=True, due_before=add_days(today, -1))
@@ -1098,7 +1453,7 @@ class Store:
         }
 
     def get_week(self, start):
-        start = week_start(start)
+        start = week_start(start, self.week_first())
         open_tasks = self.list_tasks(open_only=True)
         days = []
         for i in range(7):
@@ -1108,7 +1463,7 @@ class Store:
         return {"start": start, "end": add_days(start, 6), "days": days}
 
     def weekly_review(self, start):
-        start = week_start(start)
+        start = week_start(start, self.week_first())
         end = add_days(start, 6)
         open_tasks = self.list_tasks(open_only=True)
         return {
@@ -1132,6 +1487,14 @@ class Store:
                        "overdue": len(self.overdue_tasks(today)), "inbox": len(self.list_inbox())},
             "memories": [m["fact"] for m in self.list_memories()][:20],
         }
+
+    def upcoming(self, today):
+        """Meetings and timed tasks for today and tomorrow, for reminders."""
+        tomorrow = add_days(today, 1)
+        events = self.list_events(today, tomorrow)
+        tasks = [t for t in self.list_tasks(open_only=True)
+                 if t["scheduled_date"] in (today, tomorrow) and t.get("scheduled_time")]
+        return {"events": events, "tasks": tasks}
 
     # ------------------------------------------------------------ pending actions
     def park_action(self, tool, args, summary):
@@ -1337,16 +1700,17 @@ def plan_day(tasks, date, events=None, now=None, available_min=None,
 
 
 def plan_week(tasks, date, events_by_day=None, now=None,
-              workday_start="09:00", workday_end="18:00", include_weekend=False):
+              workday_start="09:00", workday_end="18:00", include_weekend=False,
+              week_first=0, weekend=(5, 6)):
     """Spread open work across the days left this week, respecting deadlines."""
     events_by_day = events_by_day or {}
-    start = week_start(date)
+    start = week_start(date, week_first)
     days = []
     for i in range(7):
         d = add_days(start, i)
         if d < date:
             continue
-        if not include_weekend and weekday_name(d) in ("Saturday", "Sunday"):
+        if not include_weekend and parse_iso(d).weekday() in weekend:
             continue
         day_start = max(to_min(workday_start), to_min(now)) if (d == date and now) else to_min(workday_start)
         free = 0 if day_start >= to_min(workday_end) else sum(
@@ -1502,6 +1866,8 @@ def parse_capture(text, today):
     out = {"tasks": [], "notes": [], "people": [], "dates": []}
     if not (text or "").strip():
         return out
+    if PERSIAN_RE.search(text):
+        return parse_capture_fa(text, today)
 
     for sentence in re.split(r"(?<=[.!?])\s+|\n+", text.strip()):
         sentence = sentence.strip()
@@ -1555,6 +1921,17 @@ def parse_capture(text, today):
 
 def suggest_inbox_action(text, today):
     """What to do with an inbox item, and why."""
+    if PERSIAN_RE.search(text or ""):
+        norm = _fa_norm(text)
+        if FA_LABEL_RE.match(norm) or (FA_IDEA_RE.search(norm) and not FA_ACTION_RE.search(norm)):
+            return {"type": "note", "reason": "idea"}
+        if FA_ACTION_RE.search(norm):
+            found = parse_date_fa(text, today)
+            extra = {}
+            if found:
+                extra["due_date" if found[2] == "due" else "scheduled_date"] = found[0]
+            return {"type": "task", "reason": "task", **extra}
+        return {"type": "note", "reason": "no_action"}
     found = parse_date(text, today)
     if IDEA_RE.search(text) and not ACTION_RE.search(text):
         return {"type": "note", "reason": "Looks like an idea or reference"}
@@ -1567,6 +1944,134 @@ def suggest_inbox_action(text, today):
             extra["due_date" if kind == "due" else "scheduled_date"] = iso
         return {"type": "task", "reason": reason, **extra}
     return {"type": "note", "reason": "No clear action, so keeping it as a note"}
+
+
+# ------------------------------------------------------------------ Persian
+PERSIAN_RE = re.compile(r"[\u0600-\u06FF]")
+FA_WEEKDAYS = {"دوشنبه": 0, "دو شنبه": 0, "سه شنبه": 1, "سهشنبه": 1, "چهارشنبه": 2, "چهار شنبه": 2,
+               "پنجشنبه": 3, "پنج شنبه": 3, "جمعه": 4, "شنبه": 5, "یکشنبه": 6, "یک شنبه": 6}
+FA_WEEKDAY_RE = re.compile(r"(?<!\w)(سه ?شنبه|پنج ?شنبه|چهار ?شنبه|یک ?شنبه|دو ?شنبه|جمعه|شنبه)(?!\w)")
+FA_DUE_RE = re.compile(r"(?<!\w)(تا|قبل از|مهلت|ددلاین|موعد|حداکثر)(?!\w)")
+FA_ACTION_RE = re.compile(
+    r"(تماس|زنگ|بخرم|بخریم|خرید|بفرستم|ارسال|تمام|تموم|بنویسم|نوشتن|پرداخت|بپردازم|رزرو|بررسی|آماده|"
+    r"ایمیل|پیام|ملاقات|ببینم|تحویل|ثبت نام|تمیز|بشویم|بپزم|یاد بگیرم|تمرین|مطالعه|بخوانم|بخونم|"
+    r"درست کنم|تعمیر|ببرم|بیاورم|بیارم|بگیرم|انجام|تکمیل|به روز|ارائه|چک کنم|بپرسم|یادم باشد|یادم باشه|"
+    r"باید|برم|بروم|بزنم|کنم|بکنم|بدهم|بدم|بسازم|طراحی|تمدید|لغو|سفارش|نوبت|قرار)")
+FA_IDEA_RE = re.compile(r"(ایده|فکر|شاید|یادداشت|نکته|چطوره|چطور است|چه طور است)")
+FA_LABEL_RE = re.compile(r"^\s*(یک |یه )?(ایده|فکر|یادداشت|نکته)\s*[:：]\s*")
+
+
+def _fa_norm(text):
+    """Standard Persian letters, ASCII digits, spaces instead of half-spaces."""
+    return (ascii_digits(text).replace("\u200c", " ").replace("ي", "ی").replace("ك", "ک")
+            .replace("ة", "ه"))
+
+
+def parse_date_fa(text, today):
+    """Like parse_date, for Persian wording. Returns (iso, phrase, kind) or None."""
+    t = _fa_norm(text)
+    kind = "due" if FA_DUE_RE.search(t) else "scheduled"
+    if re.search(r"پس ?فردا", t):
+        return add_days(today, 2), "پس‌فردا", kind
+    if re.search(r"(?<!\w)(امروز|امشب)(?!\w)", t):
+        return today, "امروز", kind
+    if re.search(r"(?<!\w)فردا(?!\w)", t):
+        return add_days(today, 1), "فردا", kind
+    if re.search(r"(?<!\w)دیروز(?!\w)", t):
+        return add_days(today, -1), "دیروز", kind
+    m = re.search(r"(\d{1,3})\s*(روز|هفته)\s*(دیگر|بعد|آینده)", t)
+    if m:
+        n = int(m.group(1)) * (7 if m.group(2) == "هفته" else 1)
+        return add_days(today, n), m.group(0), kind
+    if re.search(r"هفته ?(ی)? ?(بعد|آینده|دیگر)", t):
+        return add_days(today, 7), "هفته بعد", kind
+    m = re.search(r"(\d{1,2})\s*(" + "|".join(JALALI_MONTHS_FA) + r")(\s*(\d{4}))?", t)
+    if m:
+        jd, jm = int(m.group(1)), JALALI_MONTHS_FA.index(m.group(2)) + 1
+        jy = int(m.group(4)) if m.group(4) else iso_to_jalali(today)[0]
+        try:
+            iso = jalali_to_iso(jy, jm, jd)
+            if iso < today and not m.group(4):
+                iso = jalali_to_iso(jy + 1, jm, jd)
+            return iso, m.group(0), kind
+        except ValueError:
+            return None
+    m = FA_WEEKDAY_RE.search(t)
+    if m:
+        target = FA_WEEKDAYS[re.sub(r"\s+", " ", m.group(1))] if re.sub(r"\s+", " ", m.group(1)) in FA_WEEKDAYS \
+            else FA_WEEKDAYS[m.group(1).replace(" ", "")]
+        delta = (target - parse_iso(today).weekday()) % 7 or 7
+        return add_days(today, delta), m.group(1), kind
+    return None
+
+
+_Z = "[ \u200c]?"  # a space, a half-space, or nothing
+FA_DATE_WORDS = re.compile(
+    r"(?<!\w)((تا|قبل از|مهلت|ددلاین|موعد|حداکثر|برای)\s+)?"
+    r"(پس" + _Z + r"فردا|امروز|امشب|فردا|دیروز|\d{1,3}\s*(روز|هفته)\s*(دیگر|بعد|آینده)|"
+    r"هفته" + _Z + r"(ی)?\s*(بعد|آینده|دیگر)|"
+    r"(سه" + _Z + r"شنبه|پنج" + _Z + r"شنبه|چهار" + _Z + r"شنبه|یک" + _Z + r"شنبه|دو" + _Z + r"شنبه|جمعه|شنبه)|"
+    r"\d{1,2}\s*(" + "|".join(JALALI_MONTHS_FA) + r")(\s*\d{4})?)(?!\w)")
+
+
+def _fa_clean(text):
+    """Keep what the person typed (half-spaces included), only unify Arabic letter forms."""
+    return text.replace("ي", "ی").replace("ك", "ک")
+
+
+def _fa_title(part):
+    t = FA_DATE_WORDS.sub(" ", _fa_clean(part))
+    t = re.sub(r"^\s*(و|من|باید|یادم باشد|یادم باشه|لطفا|لطفاً)\s+", "", t)
+    t = re.sub(r"\s{2,}", " ", t).strip(" ،,.؛")
+    return t[:200]
+
+
+def parse_capture_fa(text, today):
+    out = {"tasks": [], "notes": [], "people": [], "dates": []}
+    for sentence in re.split(r"[.!؟?\n؛]+", text):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        chunks = []
+        for piece in re.split(r"[،,]", sentence):
+            piece = piece.strip()
+            if not piece:
+                continue
+            # Split on "و" only when every side reads like its own action,
+            # so "کتاب و دفتر بخرم" stays one task.
+            sides = [x.strip() for x in re.split(r"\s+و\s+", piece) if x.strip()]
+            if len(sides) > 1 and all(FA_ACTION_RE.search(_fa_norm(x)) or FA_LABEL_RE.match(x) for x in sides):
+                chunks.extend(sides)
+            else:
+                chunks.append(re.sub(r"^\s*و\s+", "", piece))
+        for chunk in chunks:
+            norm = _fa_norm(chunk)
+            original = _fa_clean(chunk).strip()
+            label = FA_LABEL_RE.match(original) or FA_LABEL_RE.match(norm)
+            maybe = re.match(r"^\s*(شاید|چطوره|چطور است)", norm)
+            if label or maybe or (FA_IDEA_RE.search(norm) and not FA_ACTION_RE.search(norm)):
+                body = FA_LABEL_RE.sub("", original).strip() if label else original
+                body = body.rstrip("؟?.")
+                if not body:
+                    continue
+                kind = label.group(2) if label else None
+                shown = body if len(body) <= 50 else body[:50].rstrip() + "…"
+                out["notes"].append({"title": f"{kind}: {shown}" if kind else shown[:80], "content": body})
+                continue
+            if not FA_ACTION_RE.search(norm):
+                out["notes"].append({"title": original[:80], "content": original})
+                continue
+            title = _fa_title(chunk)
+            if not title:
+                continue
+            task = {"title": title, "people": []}
+            found = parse_date_fa(chunk, today)
+            if found:
+                iso, phrase, kind = found
+                task["due_date" if kind == "due" else "scheduled_date"] = iso
+                out["dates"].append({"date": iso, "phrase": phrase, "kind": kind})
+            out["tasks"].append(task)
+    return out
 
 
 # ======================================================================
@@ -1836,6 +2341,114 @@ def test_connection(cfg, **opts):
 
 
 # ======================================================================
+# notify
+# ======================================================================
+
+import hashlib
+from datetime import datetime, timedelta, timezone
+
+
+
+def _ics_escape(text: str) -> str:
+    return (str(text or "").replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,")
+            .replace("\r\n", "\\n").replace("\n", "\\n"))
+
+
+def _fold(line: str) -> str:
+    """Lines longer than 75 bytes are folded, as the calendar format requires."""
+    raw = line.encode("utf-8")
+    if len(raw) <= 75:
+        return line
+    parts, cur = [], b""
+    for ch in line:
+        b = ch.encode("utf-8")
+        if len(cur) + len(b) > (75 if not parts else 74):
+            parts.append(cur.decode("utf-8"))
+            cur = b""
+        cur += b
+    parts.append(cur.decode("utf-8"))
+    return "\r\n ".join(parts)
+
+
+def _stamp(date_iso: str, hhmm: str) -> str:
+    return date_iso.replace("-", "") + "T" + hhmm.replace(":", "") + "00"
+
+
+def plan_items(events, tasks, default_minutes=30):
+    """Meetings and timed tasks as calendar items."""
+    items = []
+    for e in events:
+        items.append({"key": f"event-{e['id']}", "title": e["title"], "date": e["date"],
+                      "start": e["start_time"], "end": e["end_time"], "kind": "event"})
+    for t in tasks:
+        if not (t.get("scheduled_date") and t.get("scheduled_time")):
+            continue
+        end = from_min(to_min(t["scheduled_time"]) + int(t.get("estimate_min") or default_minutes))
+        items.append({"key": f"task-{t['id']}", "title": t["title"], "date": t["scheduled_date"],
+                      "start": t["scheduled_time"], "end": end, "kind": "task"})
+    return sorted(items, key=lambda i: (i["date"], i["start"]))
+
+
+def build_ics(items, lead_min=10, calendar_name="Planner", user_key=""):
+    """A calendar file with an alarm before each item. Times are local
+    ("floating"), so the calendar app shows them in the person's own time."""
+    now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Planner//Daily plan//EN", "CALSCALE:GREGORIAN",
+             "METHOD:PUBLISH", f"X-WR-CALNAME:{_ics_escape(calendar_name)}"]
+    for it in items:
+        # A stable id means importing an updated plan replaces items instead of duplicating them.
+        uid = hashlib.sha256(f"{user_key}|{it['key']}|{it['date']}".encode()).hexdigest()[:32] + "@planner"
+        lines += ["BEGIN:VEVENT", f"UID:{uid}", f"DTSTAMP:{now}",
+                  f"DTSTART:{_stamp(it['date'], it['start'])}", f"DTEND:{_stamp(it['date'], it['end'])}",
+                  f"SUMMARY:{_ics_escape(it['title'])}"]
+        if lead_min is not None and lead_min >= 0:
+            lines += ["BEGIN:VALARM", "ACTION:DISPLAY", f"DESCRIPTION:{_ics_escape(it['title'])}",
+                      f"TRIGGER:-PT{int(lead_min)}M", "END:VALARM"]
+        lines.append("END:VEVENT")
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(_fold(line) for line in lines) + "\r\n"
+
+
+def build_reminders(upcoming, today, now_hm, lead_min=10, morning="", lang="en", summary=None):
+    """Reminders for the next 24 hours: [{at, title, body, tag}].
+    'at' is local time ('YYYY-MM-DDTHH:MM'); the browser works out the wait."""
+    fa = lang == "fa"
+    out = []
+    now = datetime.fromisoformat(f"{today}T{now_hm}")
+    horizon = now + timedelta(hours=24)
+    for it in plan_items(upcoming.get("events", []), upcoming.get("tasks", [])):
+        start = datetime.fromisoformat(f"{it['date']}T{it['start']}")
+        at = start - timedelta(minutes=int(lead_min))
+        if not now <= at <= horizon:
+            continue
+        when = fa_digits(it["start"]) if fa else it["start"]
+        mins = fa_digits(lead_min) if fa else lead_min
+        if it["kind"] == "event":
+            title = f"جلسه ساعت {when}" if fa else f"Meeting at {when}"
+        else:
+            title = f"شروع کار ساعت {when}" if fa else f"Up next at {when}"
+        body = it["title"] + ((f" (تا {mins} دقیقهٔ دیگر)" if fa else f" (in {mins} min)") if lead_min else "")
+        out.append({"at": at.strftime("%Y-%m-%dT%H:%M"), "title": title, "body": body,
+                    "tag": f"{it['key']}-{it['date']}-{it['start']}"})
+    if morning and summary is not None:
+        for day in (today, add_days(today, 1)):
+            at = datetime.fromisoformat(f"{day}T{morning}")
+            if now <= at <= horizon:
+                s = summary(day)
+                if fa:
+                    body = f"{fa_digits(s['tasks'])} کار و {fa_digits(s['events'])} جلسه" + \
+                           (f"، {fa_digits(s['overdue'])} کار عقب‌افتاده" if s["overdue"] else "")
+                    title = "برنامهٔ امروز"
+                else:
+                    body = f"{s['tasks']} task(s) and {s['events']} meeting(s)" + \
+                           (f", {s['overdue']} overdue" if s["overdue"] else "")
+                    title = "Your day"
+                out.append({"at": at.strftime("%Y-%m-%dT%H:%M"), "title": title, "body": body,
+                            "tag": f"morning-{day}"})
+    return sorted(out, key=lambda r: r["at"])
+
+
+# ======================================================================
 # agent
 # ======================================================================
 
@@ -1845,6 +2458,8 @@ import json
 MAX_STEPS = 8
 BASIC_NOTE = ("Basic mode: I handle capture, planning, overdue checks and search. "
               "Connect a free AI in Settings for full natural-language help.")
+BASIC_NOTE_FA = ("حالت ساده: ثبت، برنامه‌ریزی، کارهای عقب‌افتاده و جستجو را انجام می‌دهم. "
+                 "برای گفتگوی کامل، در تنظیمات یک هوش مصنوعی رایگان وصل کنید.")
 
 _S = lambda **props: {"type": "object", "properties": props}
 
@@ -1874,6 +2489,14 @@ def tool_schemas():
                           "required": ["id", "subtasks"]}},
         {"name": "delete_task", "description": "Delete a task. Prefer cancelling instead.",
          "input_schema": {**_S(id=num), "required": ["id"]}},
+        {"name": "share_task", "description": "Share one of the user's tasks with another person by email. "
+                                             "Both then see it; an editor can also change it.",
+         "input_schema": {**_S(id=num, email=text, role={"type": "string", "description": "editor or viewer"}),
+                          "required": ["id", "email"]}},
+        {"name": "nudge_task", "description": "Send a short reminder about a shared task to the other people on it.",
+         "input_schema": {**_S(id=num), "required": ["id"]}},
+        {"name": "list_shared", "description": "Tasks shared with the user, and tasks the user shares with others.",
+         "input_schema": _S()},
         {"name": "search_tasks", "description": "Find tasks by text or filters.",
          "input_schema": _S(query=text, status=text, open_only={"type": "boolean"}, project_id=num)},
         {"name": "get_task", "description": "One task with its subtasks and blockers.",
@@ -1933,7 +2556,7 @@ def tool_schemas():
     ]
 
 
-READ_ONLY = {"search_tasks", "get_task", "search_notes", "get_note", "search_projects", "get_project",
+READ_ONLY = {"list_shared", "search_tasks", "get_task", "search_notes", "get_note", "search_projects", "get_project",
              "search_goals", "get_goal", "list_events", "get_today", "get_week", "plan_day",
              "plan_week", "weekly_review", "search_context", "process_inbox"}
 
@@ -1942,6 +2565,8 @@ def needs_confirmation(name, args):
     """Destructive or sweeping changes wait for a person."""
     if name in ("delete_task", "delete_note", "delete_project"):
         return True
+    if name == "share_task":       # someone else would start seeing this task
+        return True
     if name == "bulk_reschedule" and len(args.get("ids") or []) > 2:
         return True
     if name == "apply_schedule" and len(args.get("changes") or []) > 3:
@@ -1949,13 +2574,29 @@ def needs_confirmation(name, args):
     return False
 
 
+def _prefs(store):
+    st = store.get_settings()
+    return st.get("lang", "en"), st.get("calendar", "gregorian")
+
+
+def _date_text(store, iso):
+    lang, cal = _prefs(store)
+    return format_date(iso, lang, cal) if iso else ""
+
+
 def summarize_pending(store, name, args):
+    """What a parked action will do, in the person's language (shown on the confirm card)."""
+    fa = _prefs(store)[0] == "fa"
     if name == "delete_task":
-        return f'Delete the task "{store.get_task(args["id"])["title"]}"'
+        t = store.get_task(args["id"])["title"]
+        return f"حذف کار «{t}»" if fa else f'Delete the task "{t}"'
     if name == "delete_note":
-        return f'Delete the note "{store.get_note(args["id"])["title"]}"'
+        t = store.get_note(args["id"])["title"]
+        return f"حذف یادداشت «{t}»" if fa else f'Delete the note "{t}"'
     if name == "delete_project":
-        return f'Delete the project "{store.get_project(args["id"])["name"]}" (its tasks and notes are kept)'
+        t = store.get_project(args["id"])["name"]
+        return (f"حذف پروژه «{t}» (کارها و یادداشت‌هایش می‌مانند)" if fa
+                else f'Delete the project "{t}" (its tasks and notes are kept)')
     if name == "bulk_reschedule":
         titles = []
         for i in args["ids"][:3]:
@@ -1963,16 +2604,31 @@ def summarize_pending(store, name, args):
                 titles.append(store.get_task(i)["title"])
             except ValidationError:
                 pass
-        more = "" if len(args["ids"]) <= 3 else f" and {len(args['ids']) - 3} more"
-        return f'Move {len(args["ids"])} tasks to {args["date"]}: ' + ", ".join(f'"{t}"' for t in titles) + more
+        n, when = len(args["ids"]), _date_text(store, args["date"])
+        if fa:
+            more = "" if n <= 3 else f" و {fa_digits(n - 3)} کار دیگر"
+            return f"انتقال {fa_digits(n)} کار به {when}: " + "، ".join(f"«{t}»" for t in titles) + more
+        more = "" if n <= 3 else f" and {n - 3} more"
+        return f"Move {n} tasks to {when}: " + ", ".join(f'"{t}"' for t in titles) + more
+    if name == "share_task":
+        t = store.get_task(args["id"])["title"]
+        who = args.get("email", "")
+        viewer = (args.get("role") == "viewer")
+        if fa:
+            return f"به اشتراک گذاشتن «{t}» با {who}" + ("، فقط برای دیدن" if viewer else "")
+        return f'Share "{t}" with {who}' + (" (view only)" if viewer else "")
     if name == "apply_schedule":
-        return f"Save {len(args['changes'])} scheduled dates from the plan"
+        n = len(args["changes"])
+        return f"ثبت {fa_digits(n)} تاریخ از برنامهٔ پیشنهادی" if fa else f"Save {n} scheduled dates from the plan"
     return f"Run {name}"
 
 
 def day_plan(store, date, available_min=None, now=None):
+    """A timed plan for one day. Tasks deliberately planned for a later day
+    stay there; everything else open is a candidate."""
     settings = store.get_settings()
-    tasks = [store.get_task(t["id"]) for t in store.list_tasks(open_only=True)]
+    tasks = [store.get_task(t["id"]) for t in store.list_tasks(open_only=True)
+             if not (t["scheduled_date"] and t["scheduled_date"] > date)]
     return plan_day(tasks, date, events=store.list_events(date), now=now,
                     available_min=available_min, workday_start=settings["workday_start"],
                     workday_end=settings["workday_end"])
@@ -1981,26 +2637,32 @@ def day_plan(store, date, available_min=None, now=None):
 def week_plan(store, start, now=None, today=None):
     """Plan the rest of a week. Days that have already passed are never used."""
     settings = store.get_settings()
-    start = week_start(start)
+    first_day = store.week_first()
+    start = week_start(start, first_day)
     today = today or start
     first = max(start, today)
+    fa = settings.get("lang") == "fa"
     if first > add_days(start, 6):
         return {"start": start, "days": [], "changes": [], "at_risk": [],
-                "assumptions": ["That week is already over, so there's nothing left to plan."]}
+                "assumptions": ["این هفته تمام شده و چیزی برای برنامه‌ریزی نمانده." if fa else
+                                "That week is already over, so there's nothing left to plan."]}
     events = {add_days(start, i): store.list_events(add_days(start, i)) for i in range(7)}
     return plan_week(store.list_tasks(open_only=True), first, events_by_day=events,
                      now=now if first == today else None,
-                     workday_start=settings["workday_start"], workday_end=settings["workday_end"])
+                     workday_start=settings["workday_start"], workday_end=settings["workday_end"],
+                     week_first=first_day, weekend=store.weekend())
 
 
 def apply_schedule(store, changes):
+    """Save dates (and start times, when a day plan gives them)."""
     by_date = {}
     for c in changes:
-        by_date.setdefault(c["to"], []).append(int(c["id"]))
+        by_date.setdefault(c["to"], []).append(c)
     applied = 0
-    for date, ids in by_date.items():
-        store.bulk_reschedule(ids, date)
-        applied += len(ids)
+    for date, items in by_date.items():
+        times = {int(c["id"]): c["time"] for c in items if c.get("time")}
+        store.bulk_reschedule([int(c["id"]) for c in items], date, times)
+        applied += len(items)
     return {"applied": applied}
 
 
@@ -2029,6 +2691,14 @@ def run_tool_unchecked(store, name, args, ctx):
         return store.split_task(args["id"], args["subtasks"])
     if name == "delete_task":
         return store.delete_task(args["id"])
+    if name == "share_task":
+        return store.share_task(args["id"], args["email"], args.get("role") or "editor")
+    if name == "nudge_task":
+        return store.nudge(args["id"])
+    if name == "list_shared":
+        keep = ("id", "title", "status", "due_date", "scheduled_date", "owner_name", "shared_with", "can_edit")
+        trim = lambda rows: [{k: t.get(k) for k in keep} for t in rows]
+        return {"shared_with_me": trim(store.shared_with_me()), "shared_by_me": trim(store.shared_by_me())}
     if name == "search_tasks":
         return store.list_tasks(query=args.get("query"), status=args.get("status"),
                                 open_only=args.get("open_only", False), project_id=args.get("project_id"))
@@ -2113,11 +2783,28 @@ def resolve_pending(store, pid, decision, ctx):
     return {"state": "confirmed", "summary": pending["summary"], "result": result}
 
 
-def describe_action(name, args, result):
+def describe_action(name, args, result, lang="en"):
     title = ""
     if isinstance(result, dict):
         title = result.get("title") or result.get("name") or ""
     title = title or args.get("title") or args.get("name") or ""
+    if lang == "fa":
+        n = lambda v: fa_digits(len(v or []))
+        labels = {
+            "create_task": f"کار «{title}» اضافه شد", "update_task": f"کار «{title}» به‌روز شد",
+            "complete_task": f"«{title}» انجام شد", "delete_task": f"کار «{title}» حذف شد",
+            "reschedule_task": f"«{title}» جابه‌جا شد", "bulk_reschedule": f"{n(args.get('ids'))} کار جابه‌جا شد",
+            "split_task": f"کار به {n(args.get('subtasks'))} بخش تقسیم شد",
+            "create_note": f"یادداشت «{title}» ذخیره شد", "update_note": f"یادداشت «{title}» به‌روز شد",
+            "delete_note": f"یادداشت «{title}» حذف شد", "create_project": f"پروژهٔ «{title}» ساخته شد",
+            "delete_project": f"پروژهٔ «{title}» حذف شد", "create_goal": f"هدف «{title}» ساخته شد",
+            "breakdown_goal": f"هدف «{args.get('title')}» با {n(args.get('projects'))} پروژه ساخته شد",
+            "create_event": f"رویداد «{title}» اضافه شد",
+            "share_task": f"«{title}» با {args.get('email', '')} به اشتراک گذاشته شد",
+            "nudge_task": "یادآوری برای هم‌تیمی‌ها فرستاده شد", "apply_schedule": f"{n(args.get('changes'))} کار زمان‌بندی شد",
+            "process_inbox_item": "یک مورد صندوق ورودی مرتب شد", "remember_fact": f"به خاطر سپردم: {args.get('fact')}",
+        }
+        return labels.get(name, name)
     labels = {
         "create_task": f'Added task "{title}"', "update_task": f'Updated task "{title}"',
         "complete_task": f'Completed "{title}"', "delete_task": f'Deleted task "{title}"',
@@ -2130,6 +2817,8 @@ def describe_action(name, args, result):
         "create_goal": f'Created goal "{title}"',
         "breakdown_goal": f'Set up goal "{args.get("title")}" with {len(args.get("projects") or [])} projects',
         "create_event": f'Added event "{title}"',
+        "share_task": f'Shared "{title}" with {args.get("email", "")}',
+        "nudge_task": "Sent a reminder to the others on that task",
         "apply_schedule": f'Scheduled {len(args.get("changes") or [])} tasks',
         "process_inbox_item": f'Processed an inbox item as {args.get("type")}',
         "remember_fact": f'Remembered: {args.get("fact")}',
@@ -2139,11 +2828,23 @@ def describe_action(name, args, result):
 
 def system_prompt(store, ctx):
     snap = store.snapshot(ctx["today"])
+    lang, cal = _prefs(store)
     facts = "\n".join(f"- {f}" for f in snap["memories"]) or "- (nothing yet)"
     projects = "\n".join(f"- #{p['id']} {p['name']}" + (f" (due {p['due_date']})" if p["due_date"] else "")
                          for p in snap["projects"]) or "- (none)"
     goals = "\n".join(f"- #{g['id']} {g['title']}" + (f" (by {g['deadline']})" if g["deadline"] else "")
                       for g in snap["goals"]) or "- (none)"
+    jy, jm, jd = iso_to_jalali(ctx["today"])
+    language = ""
+    if lang == "fa":
+        language = ("\n- Always reply in Persian (Farsi), in a warm, plain tone. Task and note titles you create "
+                    "should be in the language the user wrote them in.")
+    calendar = ""
+    if cal == "jalali":
+        calendar = (f"\n- The user reads dates in the Jalali (Solar Hijri) calendar. Today is Jalali {jy}/{jm:02d}/{jd:02d}. "
+                    "Tools always take and return Gregorian YYYY-MM-DD; the app converts them for display. "
+                    "When you mention a day, prefer weekday names or relative words (today, tomorrow, next Saturday) "
+                    "over converting dates yourself. Weeks start on Saturday and Friday is the weekend.")
     return f"""You are the planning assistant inside a personal notes and planner app.
 
 Today is {snap['weekday']} {snap['today']}. The working day runs
@@ -2168,7 +2869,9 @@ Rules:
 - When a tool answers that confirmation is needed, tell the user what will happen and stop.
 - Prefer cancelling a task over deleting it.
 - Save lasting facts with remember_fact.
-- Be concise: short sentences, compact lists, no preamble. Refer to items by title, not id.
+- Tasks can be shared with other people by email. Sharing asks the user to confirm first.
+  Never guess an email address; use one the user gave you.
+- Be concise: short sentences, compact lists, no preamble. Refer to items by title, not id.{language}{calendar}
 """
 
 
@@ -2191,10 +2894,11 @@ def chat(store, message, ctx, call_model=None, config=None):
                 out = _run_loop(agent_store, message, ctx, call)
             except AIUnavailable as e:
                 out = fallback_agent(agent_store, message, ctx)
-                out["notice"] = f"AI unavailable: {e} Answered in basic mode."
+                out["notice"] = (f"هوش مصنوعی در دسترس نبود ({e}). با حالت ساده جواب دادم."
+                                 if _prefs(store)[0] == "fa" else f"AI unavailable: {e} Answered in basic mode.")
         else:
             out = fallback_agent(agent_store, message, ctx)
-            out["notice"] = cfg["problem"] or BASIC_NOTE
+            out["notice"] = BASIC_NOTE_FA if _prefs(store)[0] == "fa" else (cfg["problem"] or BASIC_NOTE)
     finally:
         agent_store.actor = "user"
     store.add_message("assistant", out["reply"])
@@ -2223,14 +2927,16 @@ def _run_loop(store, message, ctx, call_model):
         except AIUnavailable:
             if step == 0:
                 raise
-            return {"reply": "The AI stopped responding partway through. Anything listed below was saved.",
+            return {"reply": ("هوش مصنوعی وسط کار قطع شد. هر چه در فهرست زیر آمده ذخیره شده است."
+                              if _prefs(store)[0] == "fa" else
+                              "The AI stopped responding partway through. Anything listed below was saved."),
                     "actions": actions, "pending": pending, "plan": plan, "mode": "ai"}
 
         messages.append({"role": "assistant", "content": res["content"]})
         uses = [b for b in res["content"] if b["type"] == "tool_use"]
         if res.get("stop_reason") != "tool_use" or not uses:
             reply = "\n".join(b["text"] for b in res["content"] if b["type"] == "text").strip()
-            return {"reply": reply or "Done.", "actions": actions, "pending": pending,
+            return {"reply": reply or ("انجام شد." if _prefs(store)[0] == "fa" else "Done."), "actions": actions, "pending": pending,
                     "plan": plan, "mode": "ai"}
 
         results = []
@@ -2240,7 +2946,7 @@ def _run_loop(store, message, ctx, call_model):
                 if isinstance(result, dict) and result.get("needs_confirmation"):
                     pending.append({"id": result["pending_action_id"], "summary": result["summary"]})
                 elif use["name"] not in READ_ONLY:
-                    actions.append(describe_action(use["name"], use.get("input") or {}, result))
+                    actions.append(describe_action(use["name"], use.get("input") or {}, result, _prefs(store)[0]))
                 if use["name"] in ("plan_day", "plan_week"):
                     plan = {"kind": use["name"], "data": result}
                 results.append({"type": "tool_result", "tool_use_id": use["id"],
@@ -2250,120 +2956,146 @@ def _run_loop(store, message, ctx, call_model):
                                 "is_error": True, "content": str(e)})
         messages.append({"role": "user", "content": results})
 
-    return {"reply": "I stopped after several steps without finishing. Try rephrasing the request.",
+    return {"reply": ("بعد از چند مرحله کار تمام نشد. درخواست را طور دیگری بنویسید." if _prefs(store)[0] == "fa" else
+                      "I stopped after several steps without finishing. Try rephrasing the request."),
             "actions": actions, "pending": pending, "plan": plan, "mode": "ai"}
 
 
 # ------------------------------------------------------------------ fallback
 def fallback_agent(store, message, ctx, mode_hint=None):
-    """Rule-based answers so the app is useful with no AI at all."""
-    m = message.lower().strip()
+    """Rule-based answers so the app is useful with no AI at all. Understands
+    common requests in English and Persian and answers in the person's language."""
+    import re
+    lang, cal = _prefs(store)
+    fa = lang == "fa"
+    m = ascii_digits(message).lower().strip()
     today = ctx["today"]
     actions, pending = [], []
+    reply = lambda text, **extra: {"reply": text, "actions": actions, "pending": pending,
+                                   "plan": extra.pop("plan", None), "mode": "basic", **extra}
 
-    import re
-    hours = re.search(r"(\d+(?:\.\d+)?)\s*(hours?|hrs?|h)\b", m)
-    mins = re.search(r"(\d+)\s*(minutes?|mins?|m)\b", m)
+    hours = re.search(r"(\d+(?:\.\d+)?)\s*(hours?|hrs?|h\b|ساعت)", m)
+    mins = re.search(r"(\d+)\s*(minutes?|mins?|دقیقه)", m)
     available = int(float(hours.group(1)) * 60) if hours else (int(mins.group(1)) if mins else None)
+    said_tomorrow = "tomorrow" in m or "فردا" in m
 
     if mode_hint != "capture":
-        if re.search(r"\b(plan my day|what should i (work on|do)|plan (for )?today|i (only )?have \d)", m):
-            date = add_days(today, 1) if "tomorrow" in m else today
+        if re.search(r"\b(plan my day|what should i (work on|do)|plan (for )?today|i (only )?have \d)", m) or \
+                re.search(r"برنامه(ٔ|ی)?\s*(امروز|روزم)|برنامه\s*ریزی\s*(امروز|روز)|الان چه کار|فقط \d+ ?(ساعت|دقیقه)", m):
+            date = add_days(today, 1) if said_tomorrow else today
             plan = day_plan(store, date, available, ctx.get("now") if date == today else None)
-            return {"reply": format_day_plan(plan), "actions": actions, "pending": pending,
-                    "plan": {"kind": "plan_day", "data": plan}, "mode": "basic"}
+            return reply(format_day_plan(plan, lang), plan={"kind": "plan_day", "data": plan})
 
-        if re.search(r"\bplan (my |the )?week|next (three|3) days\b", m):
+        if re.search(r"\bplan (my |the )?week|next (three|3) days\b", m) or re.search(r"برنامه(ٔ|ی)?\s*(هفته|این هفته)", m):
             plan = week_plan(store, today, ctx.get("now"), today)
-            lines = [f"{d['weekday'][:3]} {d['date'][5:]}: " +
-                     (", ".join(t["title"] for t in d["tasks"]) if d["tasks"] else "nothing planned")
-                     for d in plan["days"]]
-            return {"reply": "Proposed week:\n" + "\n".join(f"• {l}" for l in lines),
-                    "actions": actions, "pending": pending,
-                    "plan": {"kind": "plan_week", "data": plan}, "mode": "basic"}
+            lines = []
+            for d in plan["days"]:
+                names = ("، " if fa else ", ").join(t["title"] for t in d["tasks"]) or ("برنامه‌ای ندارد" if fa else "nothing planned")
+                lines.append(f"{weekday_label(d['date'], lang)} {format_date(d['date'], lang, cal)}: {names}")
+            head = "پیشنهاد برای این هفته:" if fa else "Proposed week:"
+            return reply(head + "\n" + "\n".join(f"• {l}" for l in lines), plan={"kind": "plan_week", "data": plan})
 
-        if re.search(r"\b(falling behind|overdue|late|behind on)\b", m):
+        if re.search(r"\b(falling behind|overdue|late|behind on)\b", m) or re.search(r"عقب|دیر شده|سررسید گذشته|عقب‌افتاده", m):
             overdue = store.overdue_tasks(today)
-            carried = store.unfinished_tasks(today)
+            carried = [t for t in store.unfinished_tasks(today) if t not in overdue]
             if not overdue and not carried:
-                return {"reply": "Nothing is overdue. You're on top of it.", "actions": actions,
-                        "pending": pending, "plan": None, "mode": "basic"}
-            lines = [f"• {t['title']}, due {t['due_date']}" for t in overdue]
-            lines += [f"• {t['title']}, planned {t['scheduled_date']}" for t in carried
-                      if t not in overdue]
-            head = f"Overdue ({len(overdue)})" if overdue else "Carried over"
-            return {"reply": f"{head}:\n" + "\n".join(lines), "actions": actions,
-                    "pending": pending, "plan": None, "mode": "basic"}
+                return reply("هیچ کاری عقب نیفتاده. همه چیز روبه‌راه است." if fa else "Nothing is overdue. You're on top of it.")
+            if fa:
+                lines = [f"• {t['title']}، مهلتش {format_date(t['due_date'], lang, cal)} بود" for t in overdue]
+                lines += [f"• {t['title']}، برای {format_date(t['scheduled_date'], lang, cal)} برنامه‌ریزی شده بود" for t in carried]
+                head = f"عقب‌افتاده ({fa_digits(len(overdue))})" if overdue else "باقی‌مانده از روزهای قبل"
+            else:
+                lines = [f"• {t['title']}, due {format_date(t['due_date'], lang, cal)}" for t in overdue]
+                lines += [f"• {t['title']}, planned {format_date(t['scheduled_date'], lang, cal)}" for t in carried]
+                head = f"Overdue ({len(overdue)})" if overdue else "Carried over"
+            return reply(f"{head}:\n" + "\n".join(lines))
 
-        if re.search(r"\bmove (all )?(unfinished|leftover|remaining).*(tomorrow|today)\b", m):
-            target = add_days(today, 1) if "tomorrow" in m else today
+        if re.search(r"\bmove (all )?(unfinished|leftover|remaining).*(tomorrow|today)\b", m) or \
+                re.search(r"(ناتمام|باقی‌مانده|باقیمانده|انجام نشده).*(فردا|امروز)", m):
+            target = add_days(today, 1) if said_tomorrow else today
             items = store.unfinished_tasks(today)
             if not items:
-                return {"reply": "There are no unfinished tasks to move.", "actions": actions,
-                        "pending": pending, "plan": None, "mode": "basic"}
+                return reply("کار ناتمامی برای جابه‌جایی نیست." if fa else "There are no unfinished tasks to move.")
             ids = [t["id"] for t in items]
             result = run_tool(store, "bulk_reschedule", {"ids": ids, "date": target}, ctx)
             if isinstance(result, dict) and result.get("needs_confirmation"):
                 pending.append({"id": result["pending_action_id"], "summary": result["summary"]})
-                return {"reply": "This needs your confirmation.", "actions": actions,
-                        "pending": pending, "plan": None, "mode": "basic"}
-            actions.append(f"Moved {len(ids)} tasks to {target}")
-            return {"reply": f"Moved {len(ids)} task(s) to {target}.", "actions": actions,
-                    "pending": pending, "plan": None, "mode": "basic"}
+                return reply("این کار به تأیید شما نیاز دارد." if fa else "This needs your confirmation.")
+            actions.append(describe_action("bulk_reschedule", {"ids": ids, "date": target}, None, lang))
+            when = format_date(target, lang, cal)
+            return reply(f"{fa_digits(len(ids))} کار به {when} منتقل شد." if fa else f"Moved {len(ids)} task(s) to {when}.")
 
-        if re.search(r"\b(summar(y|ize|ise)).*(week|wrote)\b", m):
-            review = store.weekly_review(today)
-            return {"reply": (f"This week: {len(review['completed'])} done, "
-                              f"{len(review['unfinished'])} unfinished, "
-                              f"{len(review['notes'])} note(s) written."),
-                    "actions": actions, "pending": pending, "plan": None, "mode": "basic"}
+        if re.search(r"\b(summar(y|ize|ise)).*(week|wrote)\b", m) or re.search(r"خلاصه", m):
+            r = store.weekly_review(today)
+            if fa:
+                return reply(f"این هفته: {fa_digits(len(r['completed']))} کار انجام شد، "
+                             f"{fa_digits(len(r['unfinished']))} کار ناتمام ماند و {fa_digits(len(r['notes']))} یادداشت نوشتید.")
+            return reply(f"This week: {len(r['completed'])} done, {len(r['unfinished'])} unfinished, "
+                         f"{len(r['notes'])} note(s) written.")
 
-        if re.search(r"\b(find|search|show me|everything (about|related))\b", m):
-            query = re.sub(r"^.*?(find|search|show me|everything about|everything related to)\s+", "", m).strip(" ?.")
-            if query:
-                found = store.search(query)
-                return {"reply": (f'"{query}": {len(found["tasks"])} task(s), {len(found["notes"])} note(s), '
-                                  f'{len(found["projects"])} project(s).'),
-                        "actions": actions, "pending": pending, "plan": None, "mode": "basic",
-                        "search": found}
+        query = None
+        found_en = re.search(r"\b(find|search|show me|everything (about|related to))\s+(.+)", m)
+        found_fa = re.search(r"(پیدا کن|جستجو کن|جستجو|همه چیز درباره(ٔ|ی)?)\s+(.+)", m)
+        if found_en:
+            query = found_en.group(3).strip(" ?.")
+        elif found_fa:
+            query = found_fa.group(3).strip(" ؟?.")
+        if query:
+            found = store.search(query)
+            if fa:
+                return reply(f"«{query}»: {fa_digits(len(found['tasks']))} کار، {fa_digits(len(found['notes']))} یادداشت، "
+                             f"{fa_digits(len(found['projects']))} پروژه.", search=found)
+            return reply(f'"{query}": {len(found["tasks"])} task(s), {len(found["notes"])} note(s), '
+                         f'{len(found["projects"])} project(s).', search=found)
 
     # Anything else is treated as something to capture.
     parsed = parse_capture(message, today)
     if not parsed["tasks"] and not parsed["notes"]:
-        return {"reply": "I couldn't find anything to organize in that.", "actions": actions,
-                "pending": pending, "plan": None, "mode": "basic"}
+        return reply("چیزی برای مرتب کردن پیدا نکردم." if fa else "I couldn't find anything to organize in that.")
     for t in parsed["tasks"]:
-        made = store.create_task(title=t["title"], due_date=t.get("due_date"),
-                                 scheduled_date=t.get("scheduled_date"))
-        actions.append(f'Added task "{made["title"]}"'
-                       + (f', due {made["due_date"]}' if made["due_date"] else ""))
+        made = store.create_task(title=t["title"], due_date=t.get("due_date"), scheduled_date=t.get("scheduled_date"))
+        actions.append(describe_action("create_task", {}, made, lang))
     for n in parsed["notes"]:
         made = store.create_note(title=n["title"], content=n["content"])
-        actions.append(f'Saved note "{made["title"]}"')
-    return {"reply": f"Organized {len(parsed['tasks'])} task(s) and {len(parsed['notes'])} note(s).",
-            "actions": actions, "pending": pending, "plan": None, "mode": "basic"}
+        actions.append(describe_action("create_note", {}, made, lang))
+    if fa:
+        return reply(f"{fa_digits(len(parsed['tasks']))} کار و {fa_digits(len(parsed['notes']))} یادداشت ثبت شد.")
+    return reply(f"Organized {len(parsed['tasks'])} task(s) and {len(parsed['notes'])} note(s).")
 
 
-def format_day_plan(plan):
+def format_day_plan(plan, lang="en"):
+    fa = lang == "fa"
     if not any(b["type"] == "task" for b in plan["schedule"]):
-        return ("There's nothing to schedule for that day. Add a task or two and ask again."
-                if not plan["must"] and not plan["should"]
-                else "Nothing fits in the time available.")
-    lines = [f"{human_minutes(plan['planned_min'])} planned of "
-             f"{human_minutes(plan['capacity_min'])} available "
-             f"({plan['window']['start']}–{plan['window']['end']}):"]
-    for block in plan["schedule"]:
-        if block["type"] == "event":
-            lines.append(f"• {block['start']} {block['title']} (meeting)")
-        elif block["type"] == "break":
-            lines.append(f"• {block['start']} break")
+        if not plan["must"] and not plan["should"]:
+            return ("برای آن روز کاری برای برنامه‌ریزی نیست. یکی دو کار اضافه کنید و دوباره بپرسید." if fa else
+                    "There's nothing to schedule for that day. Add a task or two and ask again.")
+        return "در وقتی که دارید چیزی جا نمی‌شود." if fa else "Nothing fits in the time available."
+    if fa:
+        lines = [fa_digits(f"{human_minutes_fa(plan['planned_min'])} برنامه از {human_minutes_fa(plan['capacity_min'])} وقت آزاد "
+                           f"({plan['window']['start']} تا {plan['window']['end']}):")]
+    else:
+        lines = [f"{human_minutes(plan['planned_min'])} planned of {human_minutes(plan['capacity_min'])} available "
+                 f"({plan['window']['start']}–{plan['window']['end']}):"]
+    for b in plan["schedule"]:
+        t = fa_digits(b["start"]) if fa else b["start"]
+        if b["type"] == "event":
+            lines.append(f"• {t} {b['title']} ({'جلسه' if fa else 'meeting'})")
+        elif b["type"] == "break":
+            lines.append(f"• {t} {'استراحت' if fa else 'break'}")
         else:
-            lines.append(f"• {block['start']}–{block['end']} {block['title']} ({block['reason']})")
+            end = fa_digits(b["end"]) if fa else b["end"]
+            lines.append(f"• {t}–{end} {b['title']}" + ("" if fa else f" ({b['reason']})"))
     if plan["did_not_fit"]:
-        lines.append("Didn't fit: " + ", ".join(t["title"] for t in plan["did_not_fit"][:4]))
-    for w in plan["warnings"]:
-        lines.append(f"⚠ {w}")
+        sep = "، " if fa else ", "
+        lines.append(("جا نشد: " if fa else "Didn't fit: ") + sep.join(t["title"] for t in plan["did_not_fit"][:4]))
     return "\n".join(lines)
+
+
+def human_minutes_fa(total):
+    h, m = divmod(int(total), 60)
+    if h and m:
+        return f"{h} ساعت و {m} دقیقه"
+    return f"{h} ساعت" if h else f"{m} دقیقه"
 
 
 # ======================================================================
@@ -2371,9 +3103,11 @@ def format_day_plan(plan):
 # ======================================================================
 
 import html
+import json
 import math
 import os
-from datetime import datetime
+import re
+from datetime import date as _date, datetime
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -2381,16 +3115,17 @@ import streamlit.components.v1 as components
 
 COOKIE = "planner_session"
 PAGES = {
-    "today": (":material/wb_sunny:", "Today"),
-    "assistant": (":material/forum:", "Assistant"),
-    "inbox": (":material/inbox:", "Inbox"),
-    "tasks": (":material/check_circle:", "Tasks"),
-    "calendar": (":material/calendar_month:", "Week"),
-    "notes": (":material/edit_note:", "Notes"),
-    "projects": (":material/folder:", "Projects"),
-    "goals": (":material/flag:", "Goals"),
-    "search": (":material/search:", "Search"),
-    "settings": (":material/settings:", "Settings"),
+    "today": (":material/wb_sunny:", "Today", "امروز"),
+    "assistant": (":material/forum:", "Assistant", "دستیار"),
+    "inbox": (":material/inbox:", "Inbox", "صندوق ورودی"),
+    "tasks": (":material/check_circle:", "Tasks", "کارها"),
+    "calendar": (":material/calendar_month:", "Week", "هفته"),
+    "notes": (":material/edit_note:", "Notes", "یادداشت‌ها"),
+    "projects": (":material/folder:", "Projects", "پروژه‌ها"),
+    "goals": (":material/flag:", "Goals", "هدف‌ها"),
+    "shared": (":material/group:", "Shared", "اشتراکی"),
+    "search": (":material/search:", "Search", "جستجو"),
+    "settings": (":material/settings:", "Settings", "تنظیمات"),
 }
 
 # Calm palette for something you open every day: sage-white paper, deep pine
@@ -2414,7 +3149,7 @@ CSS = """
 .stApp h1 { font-size: 2.1rem; }
 .stApp h2 { font-size: 1.45rem; }
 .stApp h3 { font-size: 1.12rem; font-family: var(--sans); font-weight: 700; letter-spacing: 0; }
-[data-testid="stAppDeployButton"] { display: none; }
+[data-testid="stAppDeployButton"], [data-testid="stHeaderActionElements"] { display: none; }
 header[data-testid="stHeader"] { background: transparent; }
 .block-container { padding-top: 2.2rem; max-width: 1180px; }
 
@@ -2478,7 +3213,7 @@ button[role="tab"][aria-selected="true"] p { color: var(--teal); }
 .streak { display: inline-flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--line);
   border-radius: 999px; padding: 6px 14px 6px 8px; color: var(--pine); font-weight: 600; font-size: .92rem; }
 .streak .dot { width: 20px; height: 20px; border-radius: 50%; background: var(--sun); display: inline-block; }
-.horizon { width: 100%; height: auto; display: block; margin-top: 6px; }
+.horizon { width: 100%; height: auto; display: block; margin-top: 6px; direction: ltr; }
 
 /* Tasks */
 .t-title { font-weight: 600; color: var(--pine); line-height: 1.35; margin: 1px 0 3px; }
@@ -2488,7 +3223,7 @@ button[role="tab"][aria-selected="true"] p { color: var(--teal); }
 .chip.rose { background: var(--rose-soft); color: var(--rose); font-weight: 600; }
 .chip.dusk { background: var(--dusk-soft); color: var(--dusk); }
 .chip.teal { background: var(--teal-soft); color: var(--teal); }
-.pri { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; vertical-align: 2px; }
+.pri { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-inline-end: 7px; vertical-align: 2px; }
 .pri.p1 { background: var(--rose); } .pri.p2 { background: var(--dusk); }
 .pri.p3 { background: #B9C6C0; } .pri.p4 { background: transparent; border: 1px solid #B9C6C0; }
 .stApp .stMarkdown p.section-note { color: var(--moss); font-size: .95rem; margin: -4px 0 10px; }
@@ -2502,7 +3237,7 @@ button[role="tab"][aria-selected="true"] p { color: var(--teal); }
 .slot { display: grid; grid-template-columns: 92px 1fr; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); }
 .slot:last-child { border-bottom: 0; }
 .slot time { color: var(--moss); font-variant-numeric: tabular-nums; font-size: .9rem; padding-top: 1px; }
-.slot .what { border-left: 3px solid var(--line); padding-left: 10px; }
+.slot .what { border-inline-start: 3px solid var(--line); padding-inline-start: 10px; }
 .slot.must .what { border-color: var(--rose); } .slot.should .what { border-color: var(--dusk); }
 .slot.nice .what { border-color: #B9C6C0; } .slot.event .what { border-color: var(--pine); }
 .slot.break .what { border-color: var(--sun); color: var(--moss); }
@@ -2511,7 +3246,9 @@ button[role="tab"][aria-selected="true"] p { color: var(--teal); }
 /* Week */
 .day-head { font-weight: 700; color: var(--pine); margin-bottom: 6px; }
 .day-head.today { color: var(--teal); }
-.day-head span { font-family: var(--serif); font-weight: 500; font-size: 1.35rem; margin-left: 4px; }
+.day-head.off { color: var(--moss); }
+.stApp .stMarkdown p.field-label { font-size: .875rem; color: var(--pine); margin: 0 0 .25rem; }
+.day-head span { font-family: var(--serif); font-weight: 500; font-size: 1.35rem; margin-inline-start: 4px; }
 .pill { font-size: .86rem; background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
   padding: 6px 9px; margin-bottom: 6px; color: var(--pine); }
 .pill.event { background: #E5EFEA; border-color: #CFE0D8; }
@@ -2523,9 +3260,9 @@ button[role="tab"][aria-selected="true"] p { color: var(--teal); }
 .auth-hero h1 { font-size: clamp(2.2rem, 4.4vw, 3.3rem); line-height: 1.08; margin: 10px 0 12px; }
 .stApp .stMarkdown .auth-hero p { color: var(--moss); font-size: 1.1rem; max-width: 34ch; line-height: 1.55; }
 .stApp .stMarkdown .auth-hero p.wordmark { font-family: var(--serif); font-size: 1.3rem; color: var(--pine); margin: 0; }
-.auth-list { color: var(--pine); padding-left: 1.1rem; margin-top: 12px; }
+.auth-list { color: var(--pine); padding-inline-start: 1.1rem; margin-top: 12px; }
 .auth-list li { margin: 4px 0; }
-.welcome ol { margin: 6px 0 0; padding-left: 1.2rem; color: var(--pine); }
+.welcome ol { margin: 6px 0 0; padding-inline-start: 1.2rem; color: var(--pine); }
 .welcome li { margin: 4px 0; }
 /* Keep a task's checkbox beside its title (and Edit beside the task) on phones */
 [class*="st-key-trow-"] > div > [data-testid="stHorizontalBlock"],
@@ -2553,9 +3290,151 @@ AUTH_ONLY_CSS = """
 """
 
 
+FA_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&display=swap');
+:root { --serif: 'Vazirmatn', Tahoma, 'Segoe UI', sans-serif; --sans: 'Vazirmatn', Tahoma, 'Segoe UI', sans-serif; }
+.stMain .block-container, [data-testid="stSidebarContent"], [data-testid="stDialog"] { direction: rtl; }
+.stApp h1, .stApp h2, .stApp h3, .stApp .stMarkdown p.hello { letter-spacing: 0; }
+.stApp .stMarkdown p.hello { font-weight: 700; line-height: 1.35; }
+.stApp textarea, .stApp input[type="text"], .stApp input:not([type]) { direction: rtl; text-align: right; }
+.stApp input[type="email"], .stApp input[autocomplete="email"], .stApp input[type="password"] { direction: ltr; text-align: left; }
+[data-testid="stChatInput"] textarea { direction: rtl; }
+.stMain [data-testid="stElementContainer"], .stMain [data-testid="stMarkdown"],
+.stMain [data-testid="stMarkdownContainer"], .stMain [data-testid="stCaptionContainer"],
+[data-testid="stSidebar"] [data-testid="stElementContainer"] { text-align: start; }
+.stApp .stMarkdown .auth-hero h1 { line-height: 1.5; }
+.stApp .stMarkdown .auth-hero p.wordmark { text-align: start; }
+.slot time { unicode-bidi: isolate; }
+.slot { grid-template-columns: 124px 1fr; }
+.stApp ol { list-style-type: persian; }
+.chip, .pill { unicode-bidi: plaintext; }
+</style>
+"""
+
+
+
+# ------------------------------------------------------------------ language
+def lang() -> str:
+    return st.session_state.get("lang", "en")
+
+
+def cal() -> str:
+    return st.session_state.get("calendar", "gregorian")
+
+
+def is_fa() -> bool:
+    return lang() == "fa"
+
+
+def L(en: str, fa: str) -> str:
+    """The same words in the person's language. Persian gets Persian digits."""
+    return fa_digits(fa) if is_fa() else en
+
+
+def N(value) -> str:
+    return fa_digits(value) if is_fa() else str(value)
+
+
+def D(iso, **kw) -> str:
+    return format_date(iso, lang(), cal(), **kw) if iso else ""
+
+
+def minutes_text(total) -> str:
+    h, m = divmod(int(total), 60)
+    if is_fa():
+        text = f"{h} ساعت و {m} دقیقه" if h and m else f"{h} ساعت" if h else f"{m} دقیقه"
+        return fa_digits(text)
+    return f"{h}h {m}m" if h and m else f"{h}h" if h else f"{m}m"
+
+
 def esc(value) -> str:
     """Everything a person typed is escaped before it goes into HTML."""
     return html.escape(str(value or ""), quote=True)
+
+
+_EN_WEEKDAY = {name: i for i, name in enumerate(WEEKDAYS_EN)}
+
+
+def tr_reason(reason: str) -> str:
+    """Planner reasons ('due Friday', 'overdue by 2 day(s)') in the person's language."""
+    if not is_fa():
+        return reason
+    m = re.fullmatch(r"overdue by (\d+) day\(s\)", reason)
+    if m:
+        return fa_digits(f"{m.group(1)} روز از مهلت گذشته")
+    m = re.fullmatch(r"due (\w+day)", reason)
+    if m and m.group(1) in _EN_WEEKDAY:
+        return f"مهلت: {WEEKDAYS_FA[_EN_WEEKDAY[m.group(1)]]}"
+    return {"due today": "مهلتش امروز است", "marked urgent": "فوری", "planned for today": "برای امروز",
+            "marked high priority": "اولویت بالا", "no deadline": "بدون مهلت"}.get(reason, reason)
+
+
+def _fa_minutes(text: str) -> str:
+    """'1h 30m' -> '۱ ساعت و ۳۰ دقیقه' inside a sentence."""
+    def rep(m):
+        h, mm = int(m.group(1) or 0), int(m.group(2) or 0)
+        return minutes_text(h * 60 + mm)
+    return re.sub(r"(?:(\d+)h)?\s?(?:(\d+)m)?(?=\W|$)", lambda m: rep(m) if (m.group(1) or m.group(2)) else m.group(0), text)
+
+
+PLAN_NOTES_FA = [
+    (r"Starting from (\d\d:\d\d), since the day is already under way\.", "از ساعت {0} شروع می‌کنم، چون روز شروع شده است."),
+    (r"You said you have about (.+)\.", "گفتید حدود {0} وقت دارید."),
+    (r"Planning (\d+)% of your (.+) of free time; the rest absorbs interruptions\.",
+     "فقط {0}٪ از {1} وقت آزادتان را پر می‌کنم تا برای کارهای پیش‌بینی‌نشده جا بماند."),
+    (r"Tasks without an estimate are treated as (\d+) minutes\.", "کارهای بدون تخمین زمان را {0} دقیقه حساب کردم."),
+    (r"The workday is already over, so this plan is for the time that's left\.",
+     "روز کاری تمام شده؛ این برنامه برای وقتی است که مانده."),
+    (r"(\d+) task\(s\) are waiting on something else and were left out\.",
+     "{0} کار منتظر کار دیگری است و کنار گذاشته شد."),
+    (r"(\d+) urgent task\(s\) don't fit in the time available: (.+)\. Consider moving a deadline\.",
+     "{0} کار فوری در وقتتان جا نمی‌شود: {1}. شاید بهتر باشد مهلتی را جابه‌جا کنید."),
+    (r"Each day is filled to about (\d+)% of its free hours \((\d\d:\d\d)–(\d\d:\d\d)\)\.",
+     "هر روز حدود {0}٪ از ساعت‌های آزادش ({1} تا {2}) پر می‌شود."),
+    (r"That week is already over, so there's nothing left to plan\.", "این هفته تمام شده و چیزی برای برنامه‌ریزی نمانده."),
+]
+
+
+def tr_note(text: str) -> str:
+    if not is_fa():
+        return text
+    for pattern, fa in PLAN_NOTES_FA:
+        m = re.fullmatch(pattern, text)
+        if m:
+            return fa_digits(fa.format(*[_fa_minutes(g) for g in m.groups()]))
+    return text
+
+
+FIELD_FA = {"Task": "عنوان کار", "Email": "ایمیل", "Name": "نام", "Thought": "متن", "Search": "عبارت جستجو",
+            "Project name": "نام پروژه", "Goal": "هدف", "Event": "عنوان", "content": "متن", "title": "عنوان"}
+ERRORS_FA = [
+    (r"(.+) is required", lambda m: f"{FIELD_FA.get(m.group(1), m.group(1))} را وارد کنید."),
+    (r"Enter a valid email address.*", lambda m: "یک ایمیل درست وارد کنید، مثل name@example.com."),
+    (r"Use at least (\d+) characters for your password\.", lambda m: f"رمز باید دست‌کم {m.group(1)} نویسه باشد."),
+    (r"That password is too easy to guess.*", lambda m: "این رمز خیلی ساده است. از چند نویسهٔ متفاوت استفاده کنید."),
+    (r"An account with this email already exists.*", lambda m: "با این ایمیل قبلاً حساب ساخته شده. لطفاً وارد شوید."),
+    (r"That email and password don't match.*", lambda m: "ایمیل و رمز با هم نمی‌خوانند. دوباره بررسی کنید."),
+    (r"Too many attempts\. Try again in (\d+) minute.*", lambda m: f"تلاش‌ها زیاد شد. {m.group(1)} دقیقهٔ دیگر دوباره امتحان کنید."),
+    (r'You already have a project called "(.+)"\.', lambda m: f"پروژه‌ای به نام «{m.group(1)}» دارید."),
+    (r"Your current password isn't right\.", lambda m: "رمز فعلی درست نیست."),
+    (r"The end of the workday must be after the start\.", lambda m: "پایان روز کاری باید بعد از شروع آن باشد."),
+    (r"The event must end after it starts\.", lambda m: "پایان رویداد باید بعد از شروع آن باشد."),
+    (r"Choose between 0 and 120 minutes\.", lambda m: "عددی بین ۰ تا ۱۲۰ دقیقه انتخاب کنید."),
+    (r".*is not a time.*", lambda m: "زمان را به شکل ۰۹:۳۰ وارد کنید."),
+    (r".*is too long \(max (\d+) characters\)", lambda m: f"متن خیلی بلند است (حداکثر {m.group(1)} نویسه)."),
+    (r"That action was already (\w+)", lambda m: "این مورد قبلاً انجام یا لغو شده است."),
+]
+
+
+def tr_error(msg: str) -> str:
+    if not is_fa():
+        return msg
+    for pattern, fn in ERRORS_FA:
+        m = re.fullmatch(pattern, msg.strip())
+        if m:
+            return fa_digits(fn(m))
+    return msg
 
 
 # ------------------------------------------------------------------ plumbing
@@ -2610,9 +3489,9 @@ def run(fn, ok_message=None):
             flash(ok_message)
         return result
     except ValidationError as e:
-        st.error(str(e))
+        st.error(tr_error(str(e)))
     except Exception as e:
-        st.error(f"Something went wrong: {e}")
+        st.error(L(f"Something went wrong: {e}", f"مشکلی پیش آمد: {e}"))
     return None
 
 
@@ -2630,6 +3509,61 @@ def set_cookie(token, days=30):
         "if (window.parent.location.protocol==='https:') c+='; Secure';"
         "window.parent.document.cookie=c;"
         "</script>", height=0)
+
+
+def date_field(label, value=None, key=None, optional=True, where=st):
+    """A date picker in the person's calendar. Returns ISO (YYYY-MM-DD) or None.
+
+    Gregorian uses Streamlit's picker; Jalali uses day / month / year lists,
+    because the built-in picker only knows the Gregorian calendar."""
+    if cal() != "jalali":
+        picked = where.date_input(label, value=_date.fromisoformat(value) if value else None,
+                                  format="YYYY-MM-DD", key=key)
+        return picked.isoformat() if picked else None
+    today_j = iso_to_jalali(local_now().date().isoformat())
+    jy, jm, jd = iso_to_jalali(value) if value else (None, None, None)
+    months = JALALI_MONTHS_FA if is_fa() else JALALI_MONTHS_EN
+    none = "—"
+    where.markdown(f'<p class="field-label">{esc(label)}</p>', unsafe_allow_html=True)
+    c1, c2, c3 = where.columns([1, 1.6, 1.3], gap="small")
+    days = ([none] if optional else []) + list(range(1, 32))
+    years = list(range(today_j[0] - 1, today_j[0] + 4))
+    d = c1.selectbox(L("Day", "روز"), days, index=days.index(jd) if jd in days else 0, key=f"{key}-d",
+                     format_func=lambda v: v if v == none else N(v), label_visibility="collapsed")
+    mo = c2.selectbox(L("Month", "ماه"), list(range(1, 13)), index=(jm or today_j[1]) - 1, key=f"{key}-m",
+                      format_func=lambda v: months[v - 1], label_visibility="collapsed")
+    y = c3.selectbox(L("Year", "سال"), years, index=years.index(jy) if jy in years else 1, key=f"{key}-y",
+                     format_func=N, label_visibility="collapsed")
+    if d == none:
+        return None
+    return jalali_to_iso(y, mo, min(int(d), jalali_month_length(y, mo)))  # 31 Mehr becomes 30 Mehr
+
+
+def friendly_date(iso, today):
+    if not iso:
+        return ""
+    diff = (_date.fromisoformat(iso) - _date.fromisoformat(today)).days
+    if diff == 0:
+        return L("today", "امروز")
+    if diff == 1:
+        return L("tomorrow", "فردا")
+    if diff == -1:
+        return L("yesterday", "دیروز")
+    if 1 < diff < 7:
+        return weekday_label(iso, lang())
+    return D(iso)
+
+
+def empty(message):
+    st.markdown(f'<div class="empty">{esc(message)}</div>', unsafe_allow_html=True)
+
+
+def note(message):
+    st.markdown(f'<p class="section-note">{esc(message)}</p>', unsafe_allow_html=True)
+
+
+def plural(n, one, many):
+    return one if n == 1 else many
 
 
 # ------------------------------------------------------------------ sign in
@@ -2650,7 +3584,7 @@ def restore_session():
 def horizon_art():
     """Decorative sunrise used on the sign-in page."""
     return """
-<svg class="horizon" viewBox="0 0 520 230" role="img" aria-label="A sun rising over a calm horizon">
+<svg class="horizon" viewBox="0 0 520 230" role="img" aria-hidden="true">
   <defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
     <stop offset="0" stop-color="#E5EFEA"/><stop offset="1" stop-color="#F3F5F1"/></linearGradient></defs>
   <rect width="520" height="230" rx="26" fill="url(#sky)"/>
@@ -2665,57 +3599,76 @@ def horizon_art():
 </svg>"""
 
 
+def language_switch(key):
+    """English / فارسی. Choosing Persian also switches to the Jalali calendar."""
+    choice = st.segmented_control("Language", ["en", "fa"], default=lang(), key=key,
+                                  format_func=lambda v: "English" if v == "en" else "فارسی",
+                                  label_visibility="collapsed")
+    if choice and choice != lang():
+        st.session_state["lang"] = choice
+        st.session_state["calendar"] = "jalali" if choice == "fa" else "gregorian"
+        return True
+    return False
+
+
 def page_auth():
     st.markdown(AUTH_ONLY_CSS, unsafe_allow_html=True)
     if st.session_state.pop("clear_cookie", False):
         set_cookie(None)
+    top = st.columns([4, 1.1])
+    with top[1]:
+        if language_switch("auth-lang"):
+            st.rerun()
     left, right = st.columns([1.15, 1], gap="large")
     with left:
+        points = [L("Turns a messy thought into tasks with the right dates", "یک فکر شلوغ را به کارهایی با تاریخ درست تبدیل می‌کند"),
+                  L("Builds a realistic plan when you only have two hours", "وقتی فقط دو ساعت وقت دارید، برنامه‌ای شدنی می‌چیند"),
+                  L("Asks before it deletes or moves anything big", "قبل از حذف یا جابه‌جایی‌های بزرگ از شما می‌پرسد")]
         st.markdown(f"""
 <div class="auth-hero">
-  <p class="wordmark">Planner</p>
-  <h1>Plan the day you actually have.</h1>
-  <p>Write down what's on your mind. Planner sorts it into tasks and notes, then fits them around your meetings.</p>
-  <ul class="auth-list">
-    <li>Turns a messy thought into tasks with the right dates</li>
-    <li>Builds a realistic plan when you only have two hours</li>
-    <li>Asks before it deletes or moves anything big</li>
-  </ul>
+  <p class="wordmark">{esc(L("Planner", "برنامه‌ریز"))}</p>
+  <h1>{esc(L("Plan the day you actually have.", "روزی را برنامه‌ریزی کن که واقعاً داری."))}</h1>
+  <p>{esc(L("Write down what's on your mind. Planner sorts it into tasks and notes, then fits them around your meetings.",
+             "هر چه در ذهن دارید بنویسید. برنامه‌ریز آن را به کار و یادداشت تبدیل می‌کند و دور جلسه‌هایتان می‌چیند."))}</p>
+  <ul class="auth-list">{"".join(f"<li>{esc(p)}</li>" for p in points)}</ul>
   {horizon_art()}
 </div>""", unsafe_allow_html=True)
     with right:
-        st.write("")
-        sign_in, create = st.tabs(["Sign in", "Create account"])
+        sign_in, create = st.tabs([L("Sign in", "ورود"), L("Create account", "ساخت حساب")])
         with sign_in:
             with st.form("sign-in"):
-                email = st.text_input("Email", autocomplete="email")
-                password = st.text_input("Password", type="password", autocomplete="current-password")
-                remember = st.checkbox("Keep me signed in on this device", value=True)
-                if st.form_submit_button("Sign in", type="primary", use_container_width=True):
+                email = st.text_input(L("Email", "ایمیل"), autocomplete="email")
+                password = st.text_input(L("Password", "رمز"), type="password", autocomplete="current-password")
+                remember = st.checkbox(L("Keep me signed in on this device", "در این دستگاه وارد بمانم"), value=True)
+                if st.form_submit_button(L("Sign in", "ورود"), type="primary", use_container_width=True):
                     try:
                         user = Accounts(conn()).authenticate(email, password)
                         finish_sign_in(user, remember)
                     except ValidationError as e:
-                        st.error(str(e))
+                        st.error(tr_error(str(e)))
         with create:
             with st.form("create-account"):
-                name = st.text_input("Your name", placeholder="What should I call you?", autocomplete="given-name")
-                email = st.text_input("Email", key="new-email", autocomplete="email")
-                password = st.text_input("Password", type="password", key="new-password",
-                                         help="At least 8 characters.", autocomplete="new-password")
-                confirm = st.text_input("Type the password again", type="password", autocomplete="new-password")
-                remember = st.checkbox("Keep me signed in on this device", value=True, key="new-remember")
-                if st.form_submit_button("Create account", type="primary", use_container_width=True):
+                name = st.text_input(L("Your name", "نام شما"), placeholder=L("What should I call you?", "چه صدایتان کنم؟"),
+                                     autocomplete="given-name")
+                email = st.text_input(L("Email", "ایمیل"), key="new-email", autocomplete="email")
+                password = st.text_input(L("Password", "رمز"), type="password", key="new-password",
+                                         help=L("At least 8 characters.", "دست‌کم ۸ نویسه."), autocomplete="new-password")
+                confirm = st.text_input(L("Type the password again", "تکرار رمز"), type="password", autocomplete="new-password")
+                remember = st.checkbox(L("Keep me signed in on this device", "در این دستگاه وارد بمانم"), value=True,
+                                       key="new-remember")
+                if st.form_submit_button(L("Create account", "ساخت حساب"), type="primary", use_container_width=True):
                     if password != confirm:
-                        st.error("The two passwords don't match.")
+                        st.error(L("The two passwords don't match.", "دو رمز یکی نیستند."))
                     else:
                         try:
                             user = Accounts(conn()).create(email, password, name)
+                            store = Store(conn(), user["id"])
+                            store.update_preferences(lang=lang(), calendar=cal())  # keep the language they chose
                             finish_sign_in(user, remember)
                         except ValidationError as e:
-                            st.error(str(e))
-            st.caption("Your tasks and notes are private to your account. Passwords are stored "
-                       "as salted hashes, never as text.")
+                            st.error(tr_error(str(e)))
+            st.caption(L("Your tasks and notes are private to your account. Passwords are stored as salted hashes, never as text.",
+                         "کارها و یادداشت‌هایتان فقط برای خودتان است. رمزها به‌صورت درهم‌سازی‌شده نگه داشته می‌شوند، نه به‌صورت متن."))
 
 
 def finish_sign_in(user, remember):
@@ -2730,7 +3683,7 @@ def finish_sign_in(user, remember):
 
 def sign_out():
     Accounts(conn()).end_session(st.session_state.get("token"))
-    keep = {"conn"}
+    keep = {"conn", "lang", "calendar"}
     for k in list(st.session_state.keys()):
         if k not in keep:
             del st.session_state[k]
@@ -2739,146 +3692,214 @@ def sign_out():
     st.rerun()
 
 
-# ------------------------------------------------------------------ pieces
+# ------------------------------------------------------------------ shared pieces
 def task_row(store, ctx, task, key, show_project=True):
     done = task["status"] == "completed"
     box = st.container(key=f"trow-{key}-{task['id']}")
     c1, c2 = box.columns([0.06, 0.94], vertical_alignment="top")
     with c1:
-        ticked = st.checkbox("Done", value=done, key=f"{key}-{task['id']}", label_visibility="collapsed")
+        ticked = st.checkbox(L("Done", "انجام شد"), value=done, key=f"{key}-{task['id']}", label_visibility="collapsed")
         if ticked != done:
             run(lambda: store.complete_task(task["id"]) if ticked else store.reopen_task(task["id"]),
-                "Nice, that's done." if ticked else "Moved back to your list.")
+                L("Nice, that's done.", "آفرین، انجام شد.") if ticked else L("Moved back to your list.", "به فهرستتان برگشت."))
             st.rerun()
     with c2:
         chips = []
         today = ctx["today"]
         if task["due_date"]:
             if not done and task["due_date"] < today:
-                chips.append(("rose", f"Overdue, was due {friendly_date(task['due_date'], today)}"))
+                chips.append(("rose", L(f"Overdue, was due {friendly_date(task['due_date'], today)}",
+                                        f"عقب‌افتاده، مهلتش {friendly_date(task['due_date'], today)} بود")))
             elif task["due_date"] == today:
-                chips.append(("rose", "Due today"))
+                chips.append(("rose", L("Due today", "مهلت: امروز")))
             else:
-                chips.append(("dusk", f"Due {friendly_date(task['due_date'], today)}"))
+                chips.append(("dusk", L(f"Due {friendly_date(task['due_date'], today)}",
+                                        f"مهلت: {friendly_date(task['due_date'], today)}")))
         if task["scheduled_date"] and task["scheduled_date"] != today:
-            chips.append(("", f"Planned {friendly_date(task['scheduled_date'], today)}"))
+            chips.append(("", L(f"Planned {friendly_date(task['scheduled_date'], today)}",
+                                f"برنامه: {friendly_date(task['scheduled_date'], today)}")))
+        if task.get("scheduled_time") and task["scheduled_date"] == today:
+            chips.append(("teal", L(f"At {task['scheduled_time']}", f"ساعت {task['scheduled_time']}")))
         if task["estimate_min"]:
-            chips.append(("", human_minutes(task["estimate_min"])))
+            chips.append(("", minutes_text(task["estimate_min"])))
         if show_project and task.get("project_name"):
             chips.append(("teal", task["project_name"]))
+        if task.get("mine") is False:
+            chips.append(("dusk", L(f"From {task.get('owner_name', '')}", f"از {task.get('owner_name', '')}")))
+        elif task.get("shared_with"):
+            names = ("، " if is_fa() else ", ").join((p["name"] or p["email"]) for p in task["shared_with"][:2])
+            extra = len(task["shared_with"]) - 2
+            if extra > 0:
+                names += L(f" and {extra} more", f" و {extra} نفر دیگر")
+            chips.append(("teal", L(f"Shared with {names}", f"مشترک با {names}")))
         chip_html = "".join(f'<span class="chip {c}">{esc(t)}</span>' for c, t in chips)
+        pri = {1: L("Urgent", "فوری"), 2: L("High", "بالا"), 3: L("Normal", "معمولی"), 4: L("Low", "پایین")}[task["priority"]]
         st.markdown(
             f'<div class="t-title{" done" if done else ""}"><span class="pri p{task["priority"]}" '
-            f'title="{esc(PRIORITIES[task["priority"]])} priority"></span>{esc(task["title"])}</div>'
+            f'title="{esc(pri)}"></span>{esc(task["title"])}</div>'
             + (f'<div class="chips">{chip_html}</div>' if chips else ""), unsafe_allow_html=True)
-
-
-def friendly_date(iso, today):
-    if not iso:
-        return ""
-    diff = (datetime.fromisoformat(iso) - datetime.fromisoformat(today)).days
-    if diff == 0:
-        return "today"
-    if diff == 1:
-        return "tomorrow"
-    if diff == -1:
-        return "yesterday"
-    if 1 < diff < 7:
-        return weekday_name(iso)
-    d = datetime.fromisoformat(iso)
-    return d.strftime("%b %-d") if os.name != "nt" else d.strftime("%b %d").replace(" 0", " ")
-
-
-def empty(message):
-    st.markdown(f'<div class="empty">{esc(message)}</div>', unsafe_allow_html=True)
 
 
 def horizon_svg(settings, now_hm, events, plan):
     """Today's working hours as a horizon: meetings sit on it, planned work
-    sits under it, and the sun shows where you are in the day."""
+    sits under it, and the sun shows where you are in the day. In Persian the
+    day runs right to left, the way the page reads."""
     start, end = to_min(settings["workday_start"]), to_min(settings["workday_end"])
     span = max(end - start, 60)
-    x = lambda m: 40 + (min(max(m, start), end) - start) / span * 920
+    rtl = is_fa()
+
+    def x(m):
+        pos = (min(max(m, start), end) - start) / span * 920
+        return 960 - pos if rtl else 40 + pos
+
     now = to_min(now_hm)
     frac = (min(max(now, start), end) - start) / span
     sun_x, sun_y = x(now), 118 - math.sin(math.pi * frac) * 70
     after = now > end
-    sun_note = (f"Starts {settings['workday_start']}" if now < start else "Done for today" if after else f"Now {now_hm}")
-    parts = [f'<svg class="horizon" viewBox="0 0 1000 176" role="img" aria-label="Your working day from '
-             f'{esc(settings["workday_start"])} to {esc(settings["workday_end"])}, with '
-             f'{len(events)} meeting(s)">']
-    parts.append('<path d="M40 118 Q500 -22 960 118" fill="none" stroke="#C9D7D0" stroke-width="1.5" stroke-dasharray="3 7"/>')
-    parts.append(f'<circle cx="{sun_x:.1f}" cy="{sun_y:.1f}" r="26" fill="#E9B44C" opacity="{0.08 if after else 0.18}"/>')
-    parts.append(f'<circle cx="{sun_x:.1f}" cy="{sun_y:.1f}" r="13" fill="#E9B44C" opacity="{0.45 if after else 1}"/>')
-    anchor = "start" if sun_x < 120 else "end" if sun_x > 880 else "middle"
+    sun_note = (L(f"Starts {settings['workday_start']}", f"شروع {settings['workday_start']}") if now < start
+                else L("Done for today", "روز کاری تمام شد") if after else L(f"Now {now_hm}", f"اکنون {now_hm}"))
+    font = "Vazirmatn, Nunito Sans, system-ui, sans-serif"
+    label = L(f"Your working day from {settings['workday_start']} to {settings['workday_end']}, with {len(events)} meeting(s)",
+              f"روز کاری شما از {settings['workday_start']} تا {settings['workday_end']} با {len(events)} جلسه")
+    # direction="ltr" keeps text-anchor meaning the same in both languages;
+    # Persian words inside still shape and order correctly.
+    parts = [f'<svg class="horizon" direction="ltr" viewBox="0 0 1000 176" role="img" aria-label="{esc(label)}">',
+             '<path d="M40 118 Q500 -22 960 118" fill="none" stroke="#C9D7D0" stroke-width="1.5" stroke-dasharray="3 7"/>',
+             f'<circle cx="{sun_x:.1f}" cy="{sun_y:.1f}" r="26" fill="#E9B44C" opacity="{0.08 if after else 0.18}"/>',
+             f'<circle cx="{sun_x:.1f}" cy="{sun_y:.1f}" r="13" fill="#E9B44C" opacity="{0.45 if after else 1}"/>']
+    edge_left, edge_right = sun_x < 120, sun_x > 880
+    anchor = "start" if edge_left else "end" if edge_right else "middle"
     parts.append(f'<text x="{sun_x:.1f}" y="{sun_y - 32:.1f}" font-size="13" text-anchor="{anchor}" fill="#5E726C" '
-                 f'font-family="Nunito Sans, system-ui, sans-serif">{esc(sun_note)}</text>')
+                 f'font-family="{font}">{esc(sun_note)}</text>')
     for e in events:
-        x1, x2 = x(to_min(e["start_time"])), x(to_min(e["end_time"]))
-        w = max(x2 - x1, 6)
+        a, b = x(to_min(e["start_time"])), x(to_min(e["end_time"]))
+        x1, w = min(a, b), max(abs(b - a), 6)
         parts.append(f'<rect x="{x1:.1f}" y="86" width="{w:.1f}" height="26" rx="8" fill="#1F3A34" opacity=".13">'
-                     f'<title>{esc(e["start_time"])} {esc(e["title"])}</title></rect>')
+                     f'<title>{esc(N(e["start_time"]))} {esc(e["title"])}</title></rect>')
         if w > 70:
-            label = e["title"] if len(e["title"]) <= int(w / 8) else e["title"][: max(int(w / 8) - 1, 1)] + "…"
-            parts.append(f'<text x="{x1 + 8:.1f}" y="103" font-size="13" fill="#1F3A34" '
-                         f'font-family="Nunito Sans, system-ui, sans-serif">{esc(label)}</text>')
+            text = e["title"] if len(e["title"]) <= int(w / 8) else e["title"][: max(int(w / 8) - 1, 1)] + "…"
+            tx, ta = (x1 + w - 8, "end") if rtl else (x1 + 8, "start")
+            parts.append(f'<text x="{tx:.1f}" y="103" font-size="13" text-anchor="{ta}" fill="#1F3A34" '
+                         f'font-family="{font}">{esc(text)}</text>')
     parts.append('<line x1="40" y1="118" x2="960" y2="118" stroke="#1F3A34" stroke-width="2"/>')
     colors = {"must": "#B8505A", "should": "#4A6FA5", "nice": "#2F7D6D"}
-    for b in (plan or {}).get("schedule", []):
-        if b["type"] != "task":
+    for blk in (plan or {}).get("schedule", []):
+        if blk["type"] != "task":
             continue
-        x1, x2 = x(to_min(b["start"])), x(to_min(b["end"]))
-        parts.append(f'<rect x="{x1:.1f}" y="125" width="{max(x2 - x1 - 3, 4):.1f}" height="9" rx="4.5" '
-                     f'fill="{colors.get(b.get("bucket"), "#2F7D6D")}"><title>{esc(b["title"])}</title></rect>')
+        a, b = x(to_min(blk["start"])), x(to_min(blk["end"]))
+        x1, w = min(a, b), max(abs(b - a) - 3, 4)
+        parts.append(f'<rect x="{x1:.1f}" y="125" width="{w:.1f}" height="9" rx="4.5" '
+                     f'fill="{colors.get(blk.get("bucket"), "#2F7D6D")}"><title>{esc(blk["title"])}</title></rect>')
     step = 60 if span <= 6 * 60 else 120 if span <= 12 * 60 else 180
     for m in range(start, end + 1, step):
         parts.append(f'<text x="{x(m):.1f}" y="160" font-size="13" text-anchor="middle" fill="#5E726C" '
-                     f'font-family="Nunito Sans, system-ui, sans-serif">{m // 60:02d}:{m % 60:02d}</text>')
+                     f'font-family="{font}">{N(f"{m // 60:02d}:{m % 60:02d}")}</text>')
     parts.append("</svg>")
     return "".join(parts)
 
 
-def render_plan(store, plan):
-    st.markdown(f'<p class="section-note">{human_minutes(plan["planned_min"])} planned of '
-                f'{human_minutes(plan["capacity_min"])} available, {esc(plan["window"]["start"])} to '
-                f'{esc(plan["window"]["end"])}.</p>', unsafe_allow_html=True)
+def render_plan(store, ctx, plan):
+    note(L(f"{minutes_text(plan['planned_min'])} planned of {minutes_text(plan['capacity_min'])} available, "
+           f"{plan['window']['start']} to {plan['window']['end']}.",
+           f"{minutes_text(plan['planned_min'])} برنامه از {minutes_text(plan['capacity_min'])} وقت آزاد، "
+           f"از {plan['window']['start']} تا {plan['window']['end']}."))
     if not plan["schedule"]:
-        empty("There's nothing to fit in yet. Add a task or two and plan again.")
+        empty(L("There's nothing to fit in yet. Add a task or two and plan again.",
+                "هنوز چیزی برای چیدن نیست. یکی دو کار اضافه کنید و دوباره برنامه بریزید."))
         return
     rows = []
     for b in plan["schedule"]:
         kind = b["type"] if b["type"] != "task" else b.get("bucket", "nice")
-        detail = {"event": "Meeting", "break": "A short break to reset"}.get(b["type"], b.get("reason", ""))
-        title = "Break" if b["type"] == "break" else b["title"]
-        rows.append(f'<div class="slot {esc(kind)}"><time>{esc(b["start"])}–{esc(b["end"])}</time>'
+        detail = {"event": L("Meeting", "جلسه"), "break": L("A short break to reset", "کمی استراحت")}.get(
+            b["type"], tr_reason(b.get("reason", "")))
+        title = L("Break", "استراحت") if b["type"] == "break" else b["title"]
+        span_text = L(f"{b['start']}–{b['end']}", f"{b['start']} تا {b['end']}")
+        rows.append(f'<div class="slot {esc(kind)}"><time>{esc(span_text)}</time>'
                     f'<div class="what">{esc(title)}<small>{esc(detail)}</small></div></div>')
     st.markdown("".join(rows), unsafe_allow_html=True)
     if plan["did_not_fit"]:
-        st.warning("Didn't fit today: " + ", ".join(t["title"] for t in plan["did_not_fit"][:6]))
+        sep = "، " if is_fa() else ", "
+        st.warning(L("Didn't fit today: ", "امروز جا نشد: ") + sep.join(t["title"] for t in plan["did_not_fit"][:6]))
     for w in plan["warnings"]:
-        st.warning(w)
+        st.warning(tr_note(w))
     if plan["assumptions"]:
-        with st.expander("How I planned this"):
+        with st.expander(L("How I planned this", "این برنامه چطور چیده شد")):
             for a in plan["assumptions"]:
-                st.write(a)
-    if plan["placed"] and st.button(f"Save this plan to today ({len(plan['placed'])} tasks)", type="primary",
-                                    key="save-plan"):
-        run(lambda: apply_schedule(store, [{"id": t["id"], "to": plan["date"]} for t in plan["placed"]]),
-            "Plan saved. Those tasks are on today's list.")
-        st.rerun()
+                st.write(tr_note(a))
+    if plan["placed"]:
+        c1, c2 = st.columns([1.6, 1.4], gap="small")
+        if c1.button(L(f"Save this plan to today ({len(plan['placed'])} tasks)",
+                       f"ثبت این برنامه برای امروز ({len(plan['placed'])} کار)"), type="primary", key="save-plan"):
+            run(lambda: apply_schedule(store, [{"id": t["id"], "to": plan["date"], "time": t["start"]}
+                                                  for t in plan["placed"]]),
+                L("Plan saved. Those tasks are on today's list, with their times.",
+                  "برنامه ثبت شد. این کارها با ساعتشان در فهرست امروز هستند."))
+            st.rerun()
+        items = plan_items(store.list_events(plan["date"]),
+                                  [{**t, "scheduled_date": plan["date"], "scheduled_time": t["start"]} for t in plan["placed"]])
+        lead = int(store.get_settings().get("remind_lead") or 10)
+        c2.download_button(L("Add to my phone calendar", "افزودن به تقویم گوشی"),
+                           build_ics(items, lead, L("Planner", "برنامه‌ریز"), str(store.uid)),
+                           file_name=f"plan-{plan['date']}.ics", mime="text/calendar", key="ics-plan",
+                           help=L(f"Your calendar will remind you {lead} minutes before each item, even when Planner is closed.",
+                                  f"تقویم گوشی {lead} دقیقه قبل از هر مورد یادآوری می‌کند، حتی وقتی برنامه‌ریز بسته است."))
 
 
 def pending_banner(store, ctx):
     for p in store.open_pending():
         with st.container(border=True):
-            st.markdown(f"**Waiting for your OK:** {esc(p['summary'])}", unsafe_allow_html=True)
+            st.markdown(f"**{esc(L('Waiting for your OK:', 'منتظر تأیید شما:'))}** {esc(p['summary'])}", unsafe_allow_html=True)
             c1, c2, _ = st.columns([1, 1, 4])
-            if c1.button("Yes, do it", key=f"pc-{p['id']}", type="primary"):
-                run(lambda: resolve_pending(store, p["id"], "confirm", ctx), "Done.")
+            if c1.button(L("Yes, do it", "بله، انجام بده"), key=f"pc-{p['id']}", type="primary"):
+                run(lambda: resolve_pending(store, p["id"], "confirm", ctx), L("Done.", "انجام شد."))
                 st.rerun()
-            if c2.button("Cancel", key=f"px-{p['id']}"):
-                run(lambda: resolve_pending(store, p["id"], "reject", ctx), "Cancelled. Nothing changed.")
+            if c2.button(L("Cancel", "لغو"), key=f"px-{p['id']}"):
+                run(lambda: resolve_pending(store, p["id"], "reject", ctx), L("Cancelled. Nothing changed.", "لغو شد. چیزی تغییر نکرد."))
                 st.rerun()
+
+
+def reminder_engine(store, ctx):
+    """Schedules browser notifications for the next 24 hours while the tab is open.
+    Timers live in the page (not the frame this runs in), so they survive Streamlit's
+    reruns; each run clears and re-creates them from the latest plan."""
+    s = store.get_settings()
+    enabled = s.get("remind_enabled") == "1"
+    reminders = []
+    if enabled:
+        def summary(day):
+            d = store.get_today(day)
+            return {"tasks": len({t["id"] for t in d["planned"] + d["due_today"]}), "events": len(d["events"]),
+                    "overdue": len(d["overdue"])}
+        reminders = build_reminders(store.upcoming(ctx["today"]), ctx["today"], ctx["now"],
+                                           int(s.get("remind_lead") or 10), s.get("remind_morning") or "",
+                                           lang(), summary)
+    # Only when reminders are on: otherwise nothing would show them and they'd
+    # be marked as delivered for nothing.
+    fresh = store.undelivered_notifications() if enabled else []
+    if fresh:
+        heading = L("Planner", "برنامه‌ریز")
+        # The person's own clock, not the server's: the browser compares against
+        # local time, and on Streamlit Cloud the server runs in UTC.
+        reminders += [{"at": f"{ctx['today']}T{ctx['now']}", "title": heading,
+                       "body": notification_text(n), "tag": f"notif-{n['id']}"} for n in fresh]
+        store.mark_delivered([n["id"] for n in fresh])
+    data = json.dumps(reminders, ensure_ascii=False).replace("<", "\\u003c")
+    components.html(f"""<script>
+(function () {{
+  var P = window.parent, list = {data};
+  (P.__plannerTimers || []).forEach(function (id) {{ P.clearTimeout(id); }});
+  P.__plannerTimers = [];
+  P.__plannerShown = P.__plannerShown || {{}};
+  if (!('Notification' in P) || P.Notification.permission !== 'granted') return;
+  var fire = new P.Function('r', "if (window.__plannerShown[r.tag]) return; window.__plannerShown[r.tag] = 1;" +
+    "try {{ new Notification(r.title, {{ body: r.body, tag: r.tag }}); }} catch (e) {{}}");
+  list.forEach(function (r) {{
+    var wait = new Date(r.at).getTime() - Date.now();   // 'YYYY-MM-DDTHH:MM' is read as local time
+    if (wait < -60000 || wait > 86400000 || P.__plannerShown[r.tag]) return;
+    P.__plannerTimers.push(P.setTimeout(fire, Math.max(wait, 0), r));
+  }});
+}})();
+</script>""", height=0)
 
 
 # ------------------------------------------------------------------ pages
@@ -2886,26 +3907,32 @@ def page_today(store, ctx, user):
     data = store.get_today(ctx["today"])
     settings = store.get_settings()
     hour = int(ctx["now"][:2])
-    greeting = "Good morning" if hour < 12 else "Good afternoon" if hour < 18 else "Good evening"
     name = (user["name"] or "").split(" ")[0]
-    open_today = len(data["planned"]) + len([t for t in data["due_today"] if t not in data["planned"]])
-    summary = []
+    if is_fa():
+        greeting = "صبح بخیر" if hour < 12 else "عصر بخیر" if hour < 18 else "سلام"
+    else:
+        greeting = "Good morning" if hour < 12 else "Good afternoon" if hour < 18 else "Good evening"
+    hello = f"{greeting}{'، ' if is_fa() else ', '}{name}." if name else f"{greeting}."
+    open_today = len({t["id"] for t in data["planned"] + data["due_today"]})
+    bits = []
     if data["events"]:
-        summary.append(f"{len(data['events'])} meeting{'s' if len(data['events']) != 1 else ''}")
-    summary.append(f"{open_today} thing{'s' if open_today != 1 else ''} planned" if open_today else "nothing scheduled yet")
+        n = len(data["events"])
+        bits.append(L(f"{n} {plural(n, 'meeting', 'meetings')}", f"{n} جلسه"))
+    bits.append(L(f"{open_today} {plural(open_today, 'thing', 'things')} planned", f"{open_today} کار در برنامه")
+                if open_today else L("nothing scheduled yet", "هنوز برنامه‌ای نچیده‌اید"))
     if data["overdue"]:
-        summary.append(f"{len(data['overdue'])} overdue")
+        bits.append(L(f"{len(data['overdue'])} overdue", f"{len(data['overdue'])} کار عقب‌افتاده"))
+    summary = ("، ".join(bits) if is_fa() else ", ".join(bits))
+    sub = L(f"{D(ctx['today'], with_weekday=True)}. You have {summary}.",
+            f"{D(ctx['today'], with_weekday=True, with_year=True)}. امروز {summary} دارید.")
     streak = store.streak(ctx["today"])
-    streak_html = (f'<span class="streak"><span class="dot"></span>{streak} day{"s" if streak != 1 else ""} in a row</span>'
-                   if streak else "")
-    date_line = datetime.fromisoformat(ctx["today"]).strftime("%A, %B %d").replace(" 0", " ")
+    days_word = plural(streak, "day", "days")
+    streak_text = L(f"{streak} {days_word} in a row", f"{streak} روز پشت سر هم")
+    streak_html = (f'<span class="streak"><span class="dot"></span>{esc(streak_text)}</span>' if streak else "")
     st.markdown(f"""
 <div class="hero">
   <div class="hero-row">
-    <div>
-      <p class="hello">{esc(greeting)}{", " + esc(name) if name else ""}.</p>
-      <p class="hero-sub">{esc(date_line)}. You have {esc(", ".join(summary))}.</p>
-    </div>
+    <div><p class="hello">{esc(hello)}</p><p class="hero-sub">{esc(sub)}</p></div>
     {streak_html}
   </div>
   {horizon_svg(settings, ctx["now"], data["events"], st.session_state.get("day_plan"))}
@@ -2913,124 +3940,138 @@ def page_today(store, ctx, user):
 
     if not user["onboarded"]:
         with st.container(border=True):
-            st.markdown("""<div class="welcome"><h3 style="margin-top:0">Welcome. Here's how to get going</h3><ol>
-<li>Write down what's on your mind in the box below and press <b>Organize</b>.</li>
-<li>Press <b>Plan my day</b>. If you only have an hour, choose that first.</li>
-<li>Optional: connect a free AI in Settings, so you can ask for anything in plain words.</li>
-</ol></div>""", unsafe_allow_html=True)
-            c1, c2, _ = st.columns([0.7, 1.4, 5], gap="small")
-            if c1.button("Got it", type="primary"):
+            steps = [L("Write down what's on your mind in the box below and press <b>Organize</b>.",
+                       "هر چه در ذهن دارید در کادر پایین بنویسید و <b>مرتب کن</b> را بزنید."),
+                     L("Press <b>Plan my day</b>. If you only have an hour, choose that first.",
+                       "<b>برنامهٔ امروزم</b> را بزنید. اگر فقط یک ساعت وقت دارید، اول همان را انتخاب کنید."),
+                     L("Optional: connect a free AI in Settings, so you can ask for anything in plain words.",
+                       "اختیاری: در تنظیمات یک هوش مصنوعی رایگان وصل کنید تا هر چیزی را با زبان ساده بپرسید.")]
+            heading = esc(L("Welcome. Here is how to get going", "خوش آمدید. از این‌جا شروع کنید"))
+            items = "".join("<li>" + s + "</li>" for s in steps)
+            st.markdown(f'<div class="welcome"><h3 style="margin-top:0">{heading}</h3><ol>{items}</ol></div>',
+                        unsafe_allow_html=True)
+            c1, c2, _ = st.columns([0.8, 2.2, 4], gap="small")
+            if c1.button(L("Got it", "فهمیدم"), type="primary"):
                 Accounts(conn()).set_onboarded(user["id"])
                 st.rerun()
-            c2.button("Connect a free AI", on_click=go, args=("settings",))
+            c2.button(L("Connect a free AI", "وصل کردن هوش مصنوعی رایگان"), on_click=go, args=("settings",))
 
     with st.form("capture", clear_on_submit=True):
-        text = st.text_area("What's on your mind?", height=96,
-                            placeholder="Finish the deck by Monday, call Alex, and an idea: a simpler hero section")
-        st.caption("I'll split it into tasks and notes. Phrases like \"by Friday\" become deadlines; "
-                   "vague ones like \"soon\" stay undated.")
-        c1, c2, _ = st.columns([0.8, 1.1, 5], gap="small")
-        organize = c1.form_submit_button("Organize", type="primary")
-        to_inbox = c2.form_submit_button("Save to inbox")
+        text = st.text_area(L("What's on your mind?", "چه در ذهن دارید؟"), height=96,
+                            placeholder=L("Finish the deck by Monday, call Alex, and an idea: a simpler hero section",
+                                          "ارائه را تا دوشنبه تمام کنم، فردا به علی زنگ بزنم، ایده: صفحهٔ اول ساده‌تر"))
+        st.caption(L('I\'ll split it into tasks and notes. Phrases like "by Friday" become deadlines; vague ones like "soon" stay undated.',
+                     "آن را به کار و یادداشت تقسیم می‌کنم. عبارتی مثل «تا جمعه» مهلت می‌شود؛ عبارت‌های مبهم مثل «به‌زودی» بی‌تاریخ می‌مانند."))
+        c1, c2, _ = st.columns([0.9, 1.2, 5], gap="small")
+        organize = c1.form_submit_button(L("Organize", "مرتب کن"), type="primary")
+        to_inbox = c2.form_submit_button(L("Save to inbox", "ذخیره در صندوق"))
     if organize and text.strip():
         parsed = parse_capture(text, ctx["today"])
         if not parsed["tasks"] and not parsed["notes"]:
-            st.warning("I couldn't find anything to organize. Try naming an action, like \"call Alex\".")
+            st.warning(L('I couldn\'t find anything to organize. Try naming an action, like "call Alex".',
+                         "چیزی برای مرتب کردن پیدا نکردم. یک کار مشخص بنویسید، مثل «به علی زنگ بزنم»."))
         else:
             for t in parsed["tasks"]:
                 run(lambda t=t: store.create_task(title=t["title"], due_date=t.get("due_date"),
                                                   scheduled_date=t.get("scheduled_date")))
             for n in parsed["notes"]:
                 run(lambda n=n: store.create_note(title=n["title"], content=n["content"]))
-            flash(f"Added {len(parsed['tasks'])} task{'s' if len(parsed['tasks']) != 1 else ''} and "
-                  f"{len(parsed['notes'])} note{'s' if len(parsed['notes']) != 1 else ''}.")
+            nt, nn = len(parsed["tasks"]), len(parsed["notes"])
+            flash(L(f"Added {nt} {plural(nt, 'task', 'tasks')} and {nn} {plural(nn, 'note', 'notes')}.",
+                    f"{nt} کار و {nn} یادداشت اضافه شد."))
             st.rerun()
     if to_inbox and text.strip():
-        run(lambda: store.add_inbox(text), "Saved to your inbox.")
+        run(lambda: store.add_inbox(text), L("Saved to your inbox.", "در صندوق ورودی ذخیره شد."))
         st.rerun()
 
     left, right = st.columns([1.05, 1], gap="large")
     with left:
-        st.subheader("Your plan")
+        st.subheader(L("Your plan", "برنامهٔ شما"))
         c1, c2 = st.columns([1.3, 1], vertical_alignment="bottom")
-        choice = c1.selectbox("How much time do you have?", ["My whole workday", "30 minutes", "1 hour",
-                                                              "2 hours", "3 hours", "4 hours"])
-        minutes = {"30 minutes": 30, "1 hour": 60, "2 hours": 120, "3 hours": 180, "4 hours": 240}.get(choice)
-        if c2.button("Plan my day", type="primary", use_container_width=True):
-            st.session_state["day_plan"] = day_plan(store, ctx["today"], minutes, ctx["now"])
+        options = [None, 30, 60, 120, 180, 240]
+        choice = c1.selectbox(L("How much time do you have?", "چقدر وقت دارید؟"), options,
+                              format_func=lambda v: L("My whole workday", "کل روز کاری") if v is None else minutes_text(v))
+        if c2.button(L("Plan my day", "برنامهٔ امروزم"), type="primary", use_container_width=True):
+            st.session_state["day_plan"] = day_plan(store, ctx["today"], choice, ctx["now"])
             st.rerun()
         if st.session_state.get("day_plan"):
-            render_plan(store, st.session_state["day_plan"])
+            render_plan(store, ctx, st.session_state["day_plan"])
         else:
-            st.markdown('<p class="section-note">I\'ll fit your tasks around meetings, leave room for '
-                        'interruptions, and tell you what won\'t fit.</p>', unsafe_allow_html=True)
+            note(L("I'll fit your tasks around meetings, leave room for interruptions, and tell you what won't fit.",
+                   "کارهایتان را دور جلسه‌ها می‌چینم، برای کارهای پیش‌بینی‌نشده جا می‌گذارم و می‌گویم چه چیزی جا نمی‌شود."))
             for e in data["events"]:
-                st.markdown(f'<div class="slot event"><time>{esc(e["start_time"])}–{esc(e["end_time"])}</time>'
-                            f'<div class="what">{esc(e["title"])}<small>Meeting</small></div></div>',
+                span_text = L(f"{e['start_time']}–{e['end_time']}", f"{e['start_time']} تا {e['end_time']}")
+                st.markdown(f'<div class="slot event"><time>{esc(span_text)}</time>'
+                            f'<div class="what">{esc(e["title"])}<small>{esc(L("Meeting", "جلسه"))}</small></div></div>',
                             unsafe_allow_html=True)
     with right:
         shown = False
         if data["overdue"]:
             shown = True
-            st.subheader("Overdue")
+            st.subheader(L("Overdue", "عقب‌افتاده"))
             for t in data["overdue"]:
                 task_row(store, ctx, t, "od")
-        due_only = [t for t in data["due_today"] if t not in data["overdue"]]
-        planned = [t for t in data["planned"] if t not in due_only]
-        if due_only or planned:
+        overdue_ids = {t["id"] for t in data["overdue"]}
+        todays = sorted({t["id"]: t for t in data["due_today"] + data["planned"] if t["id"] not in overdue_ids}.values(),
+                        key=lambda t: (t.get("scheduled_time") or "99", t["priority"]))
+        if todays:
             shown = True
-            st.subheader("Today")
-            for t in due_only + planned:
+            st.subheader(L("Today", "امروز"))
+            for t in todays:
                 task_row(store, ctx, t, "td")
         if data["carried_over"]:
             shown = True
-            st.subheader("Left over from before")
+            st.subheader(L("Left over from before", "مانده از روزهای قبل"))
             for t in data["carried_over"]:
                 task_row(store, ctx, t, "co")
-            if st.button(f"Move {'all ' if len(data['carried_over']) > 1 else ''}to today"):
+            if st.button(L("Move to today", "انتقال به امروز")):
                 run(lambda: store.bulk_reschedule([t["id"] for t in data["carried_over"]], ctx["today"]),
-                    "Moved to today.")
+                    L("Moved to today.", "به امروز منتقل شد."))
                 st.rerun()
         if data["deadlines_this_week"]:
             shown = True
-            st.subheader("Coming up this week")
+            st.subheader(L("Coming up this week", "مهلت‌های این هفته"))
             for t in data["deadlines_this_week"]:
                 task_row(store, ctx, t, "dl")
         undated = [t for t in store.list_tasks(open_only=True) if not t["due_date"] and not t["scheduled_date"]]
         if undated:
-            c1, c2 = st.columns([3, 1.2], vertical_alignment="center")
-            c1.markdown(f'<p class="section-note" style="margin:0">{len(undated)} task{"s" if len(undated) != 1 else ""} '
-                        f'without a date. Plan my day can fit them in.</p>', unsafe_allow_html=True)
-            c2.button("See them", on_click=go, args=("tasks",), use_container_width=True)
             shown = True
+            c1, c2 = st.columns([3, 1.2], vertical_alignment="center")
+            n = len(undated)
+            tasks_word = plural(n, "task", "tasks")
+            msg = L(f"{n} {tasks_word} without a date. Plan my day can fit them in.",
+                    f"{n} کار بدون تاریخ دارید. «برنامهٔ امروزم» می‌تواند آن‌ها را جا بدهد.")
+            c1.markdown(f'<p class="section-note" style="margin:0">{esc(msg)}</p>', unsafe_allow_html=True)
+            c2.button(L("See them", "دیدن"), on_click=go, args=("tasks",), use_container_width=True)
         if data["completed_today"]:
-            st.caption(f"Done today: {len(data['completed_today'])}. Nice work.")
+            st.caption(L(f"Done today: {len(data['completed_today'])}. Nice work.", f"امروز {len(data['completed_today'])} کار انجام دادید. آفرین."))
         if not shown:
-            empty("Nothing is waiting on you today. Write something in the box above, "
-                  "or open Tasks to pick something up.")
+            empty(L("Nothing is waiting on you today. Write something in the box above, or open Tasks to pick something up.",
+                    "امروز کاری منتظر شما نیست. در کادر بالا چیزی بنویسید یا از «کارها» یکی را بردارید."))
 
 
 def page_assistant(store, ctx):
-    st.title("Assistant")
+    st.title(L("Assistant", "دستیار"))
     cfg = resolve_config(store)
     if cfg["enabled"]:
-        st.markdown(f'<p class="section-note">Using {esc(cfg["label"])}. Ask in your own words; '
-                    f'I\'ll check with you before deleting or moving several things.</p>', unsafe_allow_html=True)
+        note(L(f"Using {cfg['label']}. Ask in your own words; I'll check with you before deleting or moving several things.",
+               f"با {cfg['label']}. با زبان خودتان بپرسید؛ قبل از حذف یا جابه‌جایی چند کار با هم، از شما می‌پرسم."))
     else:
-        c1, c2 = st.columns([4, 1.3], vertical_alignment="center")
-        c1.markdown('<p class="section-note" style="margin:0">Basic mode: I understand planning, overdue checks, '
-                    'moving unfinished tasks, search and capture. Connect a free AI to ask anything.</p>',
+        c1, c2 = st.columns([4, 1.5], vertical_alignment="center")
+        c1.markdown(f'<p class="section-note" style="margin:0">{esc(L("Basic mode: I understand planning, overdue checks, moving unfinished tasks, search and capture. Connect a free AI to ask anything.", "حالت ساده: برنامه‌ریزی، کارهای عقب‌افتاده، جابه‌جایی کارهای ناتمام، جستجو و ثبت را می‌فهمم. برای پرسیدن هر چیزی، یک هوش مصنوعی رایگان وصل کنید."))}</p>',
                     unsafe_allow_html=True)
-        c2.button("Connect a free AI", on_click=go, args=("settings",), use_container_width=True)
+        c2.button(L("Connect a free AI", "وصل کردن هوش مصنوعی"), on_click=go, args=("settings",), use_container_width=True)
 
     pending_banner(store, ctx)
     chat = st.session_state.setdefault("chat", [])
     if not chat:
         st.write("")
-        st.markdown("**Try one of these**")
-        ideas = ["Plan my day", "What am I falling behind on?", "Move unfinished tasks to tomorrow",
-                 "Plan my week", "Summarize what I wrote this week", "I only have 2 hours today"]
-        for row in (ideas[:3], ideas[3:]):
+        st.markdown(f"**{esc(L('Try one of these', 'یکی از این‌ها را امتحان کنید'))}**")
+        ideas = ([("Plan my day", "برنامهٔ امروزم را بچین"), ("What am I falling behind on?", "چه کارهایی عقب افتاده؟"),
+                  ("Move unfinished tasks to tomorrow", "کارهای ناتمام را به فردا منتقل کن"), ("Plan my week", "برنامهٔ هفته را بچین"),
+                  ("Summarize what I wrote this week", "خلاصهٔ این هفته"), ("I only have 2 hours today", "امروز فقط ۲ ساعت وقت دارم")])
+        labels = [fa if is_fa() else en for en, fa in ideas]
+        for row in (labels[:3], labels[3:]):
             for col, idea in zip(st.columns(3), row):
                 if col.button(idea, use_container_width=True):
                     st.session_state["ask"] = idea
@@ -3042,16 +4083,17 @@ def page_assistant(store, ctx):
                 st.caption(f"✓ {a}")
             if msg.get("notice"):
                 st.caption(msg["notice"])
-    prompt = st.chat_input("Ask, plan, or write down what's on your mind") or st.session_state.pop("ask", None)
+    prompt = st.chat_input(L("Ask, plan, or write down what's on your mind", "بپرسید، برنامه بریزید یا هر چه در ذهن دارید بنویسید")) \
+        or st.session_state.pop("ask", None)
     if prompt:
         chat.append({"role": "user", "content": prompt})
-        with st.spinner("Thinking…"):
+        with st.spinner(L("Thinking…", "در حال فکر کردن…")):
             try:
                 out = chat(store, prompt, ctx)
             except ValidationError as e:
-                out = {"reply": str(e), "actions": []}
+                out = {"reply": tr_error(str(e)), "actions": []}
             except Exception as e:
-                out = {"reply": f"Something went wrong: {e}", "actions": []}
+                out = {"reply": L(f"Something went wrong: {e}", f"مشکلی پیش آمد: {e}"), "actions": []}
         chat.append({"role": "assistant", "content": out["reply"], "actions": out.get("actions", []),
                      "notice": out.get("notice")})
         plan = out.get("plan") or {}
@@ -3060,150 +4102,267 @@ def page_assistant(store, ctx):
         elif plan.get("kind") == "plan_week":
             st.session_state["week_proposal"] = plan["data"]
         st.rerun()
-    if chat and st.button("Start a new conversation"):
+    if chat and st.button(L("Start a new conversation", "گفتگوی تازه")):
         st.session_state["chat"] = []
         store.clear_messages()
         st.rerun()
 
 
 def page_inbox(store, ctx):
-    st.title("Inbox")
-    st.markdown('<p class="section-note">A place for thoughts you haven\'t sorted yet. Each one has a '
-                'suggestion; one click turns it into a task or a note.</p>', unsafe_allow_html=True)
+    st.title(L("Inbox", "صندوق ورودی"))
+    note(L("A place for thoughts you haven't sorted yet. Each one has a suggestion; one click turns it into a task or a note.",
+           "جای فکرهایی که هنوز مرتب نشده‌اند. برای هر کدام پیشنهادی هست؛ با یک کلیک کار یا یادداشت می‌شود."))
     with st.form("add-inbox", clear_on_submit=True):
         c1, c2 = st.columns([5, 1], vertical_alignment="bottom")
-        text = c1.text_input("Add a thought", placeholder="Anything, big or small")
-        if c2.form_submit_button("Add", use_container_width=True) and text.strip():
-            run(lambda: store.add_inbox(text), "Added to your inbox.")
+        text = c1.text_input(L("Add a thought", "یک فکر اضافه کنید"), placeholder=L("Anything, big or small", "هر چیزی، کوچک یا بزرگ"))
+        if c2.form_submit_button(L("Add", "افزودن"), use_container_width=True) and text.strip():
+            run(lambda: store.add_inbox(text), L("Added to your inbox.", "به صندوق اضافه شد."))
             st.rerun()
     items = store.list_inbox()
     if not items:
-        empty("Your inbox is clear.")
+        empty(L("Your inbox is clear.", "صندوق ورودی خالی است."))
         return
     for item in items:
         tip = suggest_inbox_action(item["text"], ctx["today"])
+        when = tip.get("due_date") or tip.get("scheduled_date")
+        if tip["type"] == "task":
+            why = L("Looks like a task", "به نظر یک کار است") + (L(f", for {D(when)}", f"، برای {D(when)}") if when else "")
+        else:
+            why = L("Looks like an idea or a note", "به نظر یک ایده یا یادداشت است")
         with st.container(border=True):
             st.markdown(f'<div class="t-title">{esc(item["text"])}</div>'
-                        f'<div class="chips"><span class="chip teal">Suggested: {esc(tip["type"])}</span>'
-                        f'<span class="chip">{esc(tip["reason"])}</span></div>', unsafe_allow_html=True)
-            c1, c2, c3, c4, _ = st.columns([1, 1, 1, 1, 2])
-            if c1.button("Make a task", key=f"it-{item['id']}", type="primary" if tip["type"] == "task" else "secondary"):
+                        f'<div class="chips"><span class="chip teal">{esc(why)}</span></div>', unsafe_allow_html=True)
+            c1, c2, c3, c4, _ = st.columns([1.1, 1.2, 0.9, 0.8, 2], gap="small")
+            if c1.button(L("Make a task", "کار شود"), key=f"it-{item['id']}", type="primary" if tip["type"] == "task" else "secondary"):
                 run(lambda: run_tool_unchecked(store, "process_inbox_item", {"id": item["id"], "type": "task",
-                    "due_date": tip.get("due_date")}, ctx), "Turned into a task.")
+                    "due_date": tip.get("due_date")}, ctx), L("Turned into a task.", "به کار تبدیل شد."))
                 st.rerun()
-            if c2.button("Make a note", key=f"in-{item['id']}", type="primary" if tip["type"] == "note" else "secondary"):
+            if c2.button(L("Make a note", "یادداشت شود"), key=f"in-{item['id']}", type="primary" if tip["type"] == "note" else "secondary"):
                 run(lambda: run_tool_unchecked(store, "process_inbox_item", {"id": item["id"], "type": "note"}, ctx),
-                    "Saved as a note.")
+                    L("Saved as a note.", "به‌عنوان یادداشت ذخیره شد."))
                 st.rerun()
-            if c3.button("Archive", key=f"ia-{item['id']}"):
-                run(lambda: store.close_inbox(item["id"], "archived"), "Archived.")
+            if c3.button(L("Archive", "بایگانی"), key=f"ia-{item['id']}"):
+                run(lambda: store.close_inbox(item["id"], "archived"), L("Archived.", "بایگانی شد."))
                 st.rerun()
-            if c4.button("Delete", key=f"id-{item['id']}"):
-                run(lambda: store.delete_inbox(item["id"]), "Deleted.")
+            if c4.button(L("Delete", "حذف"), key=f"id-{item['id']}"):
+                run(lambda: store.delete_inbox(item["id"]), L("Deleted.", "حذف شد."))
                 st.rerun()
 
 
 def page_tasks(store, ctx):
-    st.title("Tasks")
+    st.title(L("Tasks", "کارها"))
     projects = store.list_projects()
     with st.form("add-task", clear_on_submit=True):
-        c1, c2, c3, c4 = st.columns([3, 1.4, 1.5, 1.1], vertical_alignment="bottom")
-        title = c1.text_input("New task", placeholder="What needs doing?")
-        due = c2.date_input("Due", value=None, format="YYYY-MM-DD")
-        project = c3.selectbox("Project", ["None"] + [p["name"] for p in projects])
-        estimate = c4.selectbox("Time", ["?", "15m", "30m", "1h", "2h", "3h"])
-        if st.form_submit_button("Add task", type="primary") and title.strip():
-            mins = {"15m": 15, "30m": 30, "1h": 60, "2h": 120, "3h": 180}.get(estimate)
-            run(lambda: store.create_task(title=title, due_date=due.isoformat() if due else None,
-                                          project=None if project == "None" else project, estimate_min=mins),
-                "Task added.")
+        title = st.text_input(L("New task", "کار تازه"), placeholder=L("What needs doing?", "چه کاری باید انجام شود؟"))
+        c2, c3, c4 = st.columns([2.2, 1.5, 1.1], vertical_alignment="bottom")
+        with c2:
+            due = date_field(L("Due", "مهلت"), key="new-due")
+        project = c3.selectbox(L("Project", "پروژه"), [None] + [p["name"] for p in projects],
+                               format_func=lambda v: L("None", "بدون پروژه") if v is None else v)
+        estimate = c4.selectbox(L("Time", "زمان"), [None, 15, 30, 60, 120, 180],
+                                format_func=lambda v: "?" if v is None else minutes_text(v))
+        if st.form_submit_button(L("Add task", "افزودن کار"), type="primary") and title.strip():
+            run(lambda: store.create_task(title=title, due_date=due, project=project, estimate_min=estimate),
+                L("Task added.", "کار اضافه شد."))
             st.rerun()
-    view = st.segmented_control("Show", ["Open", "Overdue", "Inbox", "In progress", "Done"], default="Open",
-                                label_visibility="collapsed") or "Open"
-    if view == "Open":
+    views = {"open": L("Open", "باز"), "overdue": L("Overdue", "عقب‌افتاده"), "inbox": L("Not planned", "بدون برنامه"),
+             "in_progress": L("In progress", "در حال انجام"), "shared": L("Shared", "اشتراکی"),
+             "completed": L("Done", "انجام‌شده")}
+    view = st.segmented_control(L("Show", "نمایش"), list(views), default="open", format_func=views.get,
+                                label_visibility="collapsed") or "open"
+    if view == "open":
         tasks = store.list_tasks(open_only=True)
-    elif view == "Overdue":
+    elif view == "overdue":
         tasks = store.overdue_tasks(ctx["today"])
-    elif view == "Done":
-        tasks = store.list_tasks(status="completed")
+    elif view == "shared":
+        seen, tasks = set(), []
+        for t in store.shared_with_me() + store.shared_by_me():
+            if t["id"] not in seen:
+                seen.add(t["id"])
+                tasks.append(t)
     else:
-        tasks = store.list_tasks(status=view.lower().replace(" ", "_"))
+        tasks = store.list_tasks(status=view)
     if not tasks:
-        empty({"Open": "No open tasks. Enjoy it, or add one above.", "Overdue": "Nothing overdue.",
-               "Done": "Finished tasks will show up here."}.get(view, "Nothing here."))
-    if tasks:
-        st.markdown(f'<p class="section-note">{len(tasks)} task{"s" if len(tasks) != 1 else ""}</p>',
-                    unsafe_allow_html=True)
+        empty({"open": L("No open tasks. Enjoy it, or add one above.", "کار بازی ندارید. لذت ببرید یا از بالا یکی اضافه کنید."),
+               "overdue": L("Nothing overdue.", "هیچ کاری عقب نیفتاده."),
+               "shared": L("No shared tasks yet. Open a task, press Edit, and share it by email.",
+                           "هنوز کار مشترکی ندارید. یک کار را باز کنید، «ویرایش» را بزنید و با ایمیل به اشتراک بگذارید."),
+               "completed": L("Finished tasks will show up here.", "کارهای انجام‌شده این‌جا نشان داده می‌شوند.")}.get(
+            view, L("Nothing here.", "این‌جا چیزی نیست.")))
+    else:
+        note(L(f"{len(tasks)} {plural(len(tasks), 'task', 'tasks')}", f"{len(tasks)} کار"))
     for t in tasks:
-        c1, c2 = st.container(key=f"tline-{t['id']}").columns([12, 1.3], vertical_alignment="center")
+        c1, c2 = st.container(key=f"tline-{t['id']}").columns([12, 1.4], vertical_alignment="center")
         with c1:
             task_row(store, ctx, t, "tk")
         with c2:
-            with st.popover("Edit", use_container_width=True):
+            with st.popover(L("Edit", "ویرایش"), use_container_width=True):
                 edit_task(store, t, projects)
         st.markdown('<div class="rule"></div>', unsafe_allow_html=True)
 
 
 def edit_task(store, task, projects):
     with st.form(f"edit-{task['id']}"):
-        title = st.text_input("Task", task["title"])
+        title = st.text_input(L("Task", "کار"), task["title"])
         c1, c2, c3 = st.columns(3)
-        statuses = ["inbox", "planned", "in_progress", "completed", "cancelled"]
-        labels = {"inbox": "Not planned", "planned": "Planned", "in_progress": "In progress",
-                  "completed": "Done", "cancelled": "Cancelled"}
-        status = c1.selectbox("Status", statuses, index=statuses.index(task["status"]), format_func=labels.get)
-        priority = c2.selectbox("Priority", list(PRIORITIES), index=task["priority"] - 1, format_func=PRIORITIES.get)
-        names = ["None"] + [p["name"] for p in projects]
-        current = task.get("project_name") or "None"
-        project = c3.selectbox("Project", names, index=names.index(current) if current in names else 0)
-        c4, c5 = st.columns(2)
-        due = c4.date_input("Due", value=datetime.fromisoformat(task["due_date"]) if task["due_date"] else None,
-                            format="YYYY-MM-DD", key=f"due-{task['id']}")
-        sched = c5.date_input("Planned for", value=datetime.fromisoformat(task["scheduled_date"])
-                              if task["scheduled_date"] else None, format="YYYY-MM-DD", key=f"sch-{task['id']}")
-        notes = st.text_area("Notes", task["description"])
-        c6, c7, _ = st.columns([1, 1, 3])
-        if c6.form_submit_button("Save changes", type="primary"):
-            run(lambda: store.update_task(task["id"], title=title, status=status, priority=priority,
-                                          due_date=due.isoformat() if due else None,
-                                          scheduled_date=sched.isoformat() if sched else None,
-                                          description=notes, project=None if project == "None" else project),
-                "Changes saved.")
+        labels = {"inbox": L("Not planned", "بدون برنامه"), "planned": L("Planned", "برنامه‌ریزی‌شده"),
+                  "in_progress": L("In progress", "در حال انجام"), "completed": L("Done", "انجام‌شده"),
+                  "cancelled": L("Cancelled", "لغوشده")}
+        statuses = list(labels)
+        status = c1.selectbox(L("Status", "وضعیت"), statuses, index=statuses.index(task["status"]), format_func=labels.get)
+        pri = {1: L("Urgent", "فوری"), 2: L("High", "بالا"), 3: L("Normal", "معمولی"), 4: L("Low", "پایین")}
+        priority = c2.selectbox(L("Priority", "اولویت"), list(PRIORITIES), index=task["priority"] - 1, format_func=pri.get)
+        names = [None] + [p["name"] for p in projects]
+        current = task.get("project_name")
+        project = c3.selectbox(L("Project", "پروژه"), names, index=names.index(current) if current in names else 0,
+                               format_func=lambda v: L("None", "بدون پروژه") if v is None else v)
+        due = date_field(L("Due", "مهلت"), task["due_date"], key=f"due-{task['id']}")
+        sched = date_field(L("Planned for", "برنامه برای"), task["scheduled_date"], key=f"sch-{task['id']}")
+        at = st.time_input(L("At (optional)", "ساعت (اختیاری)"),
+                           value=datetime.strptime(task["scheduled_time"], "%H:%M").time() if task.get("scheduled_time") else None,
+                           step=900, key=f"at-{task['id']}")
+        notes = st.text_area(L("Notes", "توضیحات"), task["description"])
+        c6, c7, _ = st.columns([1.2, 1.1, 2])
+        if c6.form_submit_button(L("Save changes", "ذخیره"), type="primary"):
+            run(lambda: store.update_task(task["id"], title=title, status=status, priority=priority, due_date=due,
+                                          scheduled_date=sched, scheduled_time=at.strftime("%H:%M") if (at and sched) else None,
+                                          description=notes, project=project), L("Changes saved.", "تغییرات ذخیره شد."))
             st.rerun()
-        if c7.form_submit_button("Delete task"):
-            run(lambda: store.delete_task(task["id"]), "Task deleted.")
+        if task.get("mine", True) and c7.form_submit_button(L("Delete task", "حذف کار")):
+            run(lambda: store.delete_task(task["id"]), L("Task deleted.", "کار حذف شد."))
             st.rerun()
+    share_controls(store, task)
+
+
+def share_controls(store, task):
+    """Share a task with someone, see who has it, nudge them, or step away."""
+    st.markdown('<div class="rule"></div>', unsafe_allow_html=True)
+    if not task.get("mine", True):
+        st.caption(L(f"Shared with you by {task.get('owner_name', '')}"
+                     + ("" if task.get("can_edit") else ", to read only"),
+                     f"{task.get('owner_name', '')} این کار را با شما به اشتراک گذاشته"
+                     + ("" if task.get("can_edit") else "، فقط برای دیدن")))
+        c1, c2 = st.columns(2, gap="small")
+        if c1.button(L("Send a nudge", "یادآوری بفرست"), key=f"nudge-{task['id']}", use_container_width=True):
+            run(lambda: store.nudge(task["id"]), L("Nudge sent.", "یادآوری فرستاده شد."))
+            st.rerun()
+        if c2.button(L("Remove from my list", "حذف از فهرست من"), key=f"leave-{task['id']}", use_container_width=True):
+            run(lambda: store.unshare_task(task["id"], store.uid), L("Removed from your list.", "از فهرست شما حذف شد."))
+            st.rerun()
+        return
+    st.markdown(f"**{esc(L('Share this task', 'اشتراک‌گذاری این کار'))}**")
+    known = [p["email"] for p in store.people_i_share_with()]
+    with st.form(f"share-{task['id']}", clear_on_submit=True):
+        email = st.text_input(L("Their email", "ایمیل طرف مقابل"), placeholder="name@example.com",
+                              help=L("They need a Planner account with this email.",
+                                     "باید با همین ایمیل در برنامه‌ریز حساب داشته باشند."))
+        roles = {"editor": L("Can change and finish it", "می‌تواند تغییر دهد و انجامش کند"),
+                 "viewer": L("Can only look at it", "فقط می‌تواند ببیند")}
+        role = st.radio(L("What can they do?", "چه کاری بتواند بکند؟"), list(roles), format_func=roles.get, horizontal=True)
+        if st.form_submit_button(L("Share", "اشتراک‌گذاری"), type="primary") and email.strip():
+            if run(lambda: store.share_task(task["id"], email, role), L("Shared. They'll see it right away.",
+                                                                        "به اشتراک گذاشته شد. بلافاصله آن را می‌بیند.")):
+                st.rerun()
+    if known:
+        st.caption(L("People you already share with: ", "کسانی که قبلاً با آن‌ها اشتراک دارید: ") + ("، " if is_fa() else ", ").join(known))
+    for person in task.get("shared_with", []):
+        c1, c2, c3 = st.columns([2.6, 1.2, 1.2], vertical_alignment="center")
+        c1.write((person["name"] or person["email"]))
+        c2.caption(L("Editor", "ویرایشگر") if person["role"] == "editor" else L("Viewer", "بیننده"))
+        if c3.button(L("Remove", "حذف"), key=f"rm-{task['id']}-{person['user_id']}", use_container_width=True):
+            run(lambda: store.unshare_task(task["id"], person["user_id"]), L("Removed.", "حذف شد."))
+            st.rerun()
+    if task.get("shared_with") and st.button(L("Send a nudge to everyone", "یادآوری برای همه"), key=f"nudgeo-{task['id']}"):
+        run(lambda: store.nudge(task["id"]), L("Nudge sent.", "یادآوری فرستاده شد."))
+        st.rerun()
+
+
+def notification_text(n):
+    who = n.get("from_name") or n.get("from_email") or L("Someone", "یک نفر")
+    title = n["title"]
+    if n["kind"] == "shared":
+        return L(f"{who} shared \"{title}\" with you", f"{who} کار «{title}» را با شما به اشتراک گذاشت")
+    if n["kind"] == "completed":
+        return L(f"{who} finished \"{title}\"", f"{who} کار «{title}» را انجام داد")
+    if n["kind"] == "nudge":
+        return L(f"{who} nudged you about \"{title}\"", f"{who} دربارهٔ «{title}» یادآوری فرستاد")
+    return title
+
+
+def page_shared(store, ctx):
+    st.title(L("Shared", "اشتراکی"))
+    note(L("Tasks you share with other people, and what they've been doing with them.",
+           "کارهایی که با دیگران به اشتراک گذاشته‌اید و خبرهایی که از آن‌ها رسیده."))
+    updates = store.list_notifications()
+    unread = store.unread_count()
+    st.subheader(L("Updates", "خبرها"))
+    if not updates:
+        empty(L("Nothing yet. Share a task from the Tasks page and updates will appear here.",
+                "هنوز خبری نیست. از صفحهٔ کارها یک کار را به اشتراک بگذارید تا خبرها این‌جا بیایند."))
+    else:
+        if unread and st.button(L(f"Mark all as read ({unread})", f"همه را خوانده‌شده کن ({unread})")):
+            store.mark_notifications_read()
+            st.rerun()
+        for n in updates[:12]:
+            fresh = n["read_at"] is None
+            when = n["created_at"][:10]
+            st.markdown(f'<div class="slot {"must" if fresh else ""}"><time>{esc(D(when))}</time>'
+                        f'<div class="what">{esc(notification_text(n))}'
+                        f'<small>{esc(L("New", "تازه") if fresh else "")}</small></div></div>', unsafe_allow_html=True)
+    mine, theirs = store.shared_by_me(), store.shared_with_me()
+    st.subheader(L("Shared with me", "با من به اشتراک گذاشته شده"))
+    if not theirs:
+        empty(L("Nothing yet.", "هنوز چیزی نیست."))
+    for t in theirs:
+        task_row(store, ctx, t, "shm")
+    st.subheader(L("I share these", "این‌ها را من به اشتراک گذاشته‌ام"))
+    if not mine:
+        empty(L("Open a task, press Edit, and share it with someone's email.",
+                "یک کار را باز کنید، «ویرایش» را بزنید و با ایمیل کسی به اشتراک بگذارید."))
+    for t in mine:
+        task_row(store, ctx, t, "shb")
 
 
 def page_week(store, ctx):
     state = st.session_state
-    state.setdefault("week_start", week_start(ctx["today"]))
+    first = store.week_first()
+    if state.get("week_first") != first:  # calendar changed: realign to the right first day
+        state["week_start"] = week_start(ctx["today"], first)
+        state["week_first"] = first
+        state["week_proposal"] = None
+    state.setdefault("week_start", week_start(ctx["today"], first))
     week = store.get_week(state["week_start"])
-    head, nav = st.columns([2, 1.4], vertical_alignment="bottom")
-    s, e = datetime.fromisoformat(week["start"]), datetime.fromisoformat(week["end"])
-    head.title("Your week")
-    head.markdown(f'<p class="section-note">{s.strftime("%B %d").replace(" 0", " ")} to '
-                  f'{e.strftime("%B %d").replace(" 0", " ")}</p>', unsafe_allow_html=True)
+    head, nav = st.columns([2, 1.5], vertical_alignment="bottom")
+    head.title(L("Your week", "هفتهٔ شما"))
+    head.markdown(f'<p class="section-note">{esc(month_span(week["start"], week["end"], lang(), cal()))}</p>', unsafe_allow_html=True)
     with nav:
-        b1, b2, b3 = st.columns(3)
-        if b1.button("Previous", use_container_width=True):
+        b1, b2, b3 = st.columns(3, gap="small")
+        if b1.button(L("Previous", "قبلی"), use_container_width=True):
             state["week_start"] = add_days(state["week_start"], -7)
             state["week_proposal"] = None
             st.rerun()
-        if b2.button("This week", use_container_width=True):
-            state["week_start"] = week_start(ctx["today"])
+        if b2.button(L("This week", "این هفته"), use_container_width=True):
+            state["week_start"] = week_start(ctx["today"], first)
             state["week_proposal"] = None
             st.rerun()
-        if b3.button("Next", use_container_width=True):
+        if b3.button(L("Next", "بعدی"), use_container_width=True):
             state["week_start"] = add_days(state["week_start"], 7)
             state["week_proposal"] = None
             st.rerun()
 
-    c1, c2, _ = st.columns([1.1, 1, 4], gap="small")
-    if c1.button("Plan my week", type="primary", use_container_width=True):
+    c1, c2, c3, _ = st.columns([1.2, 1.1, 1.7, 2.6], gap="small")
+    if c1.button(L("Plan my week", "برنامهٔ هفته"), type="primary", use_container_width=True):
         state["week_proposal"] = week_plan(store, state["week_start"], ctx["now"], ctx["today"])
         st.rerun()
-    review = c2.button("Review week", use_container_width=True)
+    review = c2.button(L("Review week", "مرور هفته"), use_container_width=True)
+    up = store.list_events(week["start"], week["end"])
+    timed = [t for d in week["days"] for t in d["tasks"] if t.get("scheduled_time") and t["status"] != "completed"]
+    lead = int(store.get_settings().get("remind_lead") or 10)
+    c3.download_button(L("Add week to my calendar", "افزودن هفته به تقویم"),
+                       build_ics(plan_items(up, timed), lead, L("Planner", "برنامه‌ریز"), str(store.uid)),
+                       file_name=f"week-{week['start']}.ics", mime="text/calendar", use_container_width=True,
+                       help=L("Meetings, and tasks that have a time, with a reminder before each.",
+                              "جلسه‌ها و کارهای ساعت‌دار، با یادآوری قبل از هر کدام."))
 
     proposal = state.get("week_proposal")
     new_by_day, moving = {}, set()
@@ -3212,349 +4371,469 @@ def page_week(store, ctx):
             new_by_day.setdefault(ch["to"], []).append(ch["title"])
             moving.add(ch["id"])
         with st.container(border=True):
-            st.markdown(f"**Suggested plan.** New placements are highlighted below. "
-                        f"{esc(proposal['assumptions'][0])}", unsafe_allow_html=True)
+            first_note = tr_note(proposal["assumptions"][0]) if proposal["assumptions"] else ""
+            st.markdown(f"**{esc(L('Suggested plan.', 'برنامهٔ پیشنهادی.'))}** "
+                        f"{esc(L('New placements are highlighted below.', 'جای‌گذاری‌های تازه در پایین مشخص شده‌اند.'))} {esc(first_note)}",
+                        unsafe_allow_html=True)
             if proposal["at_risk"]:
-                st.warning("No room this week for: " + ", ".join(t["title"] for t in proposal["at_risk"]))
-            b1, b2, _ = st.columns([1.4, 1, 4])
-            if b1.button(f"Apply plan ({len(proposal['changes'])} changes)", type="primary",
-                         disabled=not proposal["changes"]):
-                run(lambda: apply_schedule(store, proposal["changes"]), "Week planned.")
+                st.warning(L("No room this week for: ", "این هفته جایی برای این‌ها نیست: ")
+                           + ("، " if is_fa() else ", ").join(t["title"] for t in proposal["at_risk"]))
+            b1, b2, _ = st.columns([1.5, 1, 4], gap="small")
+            n = len(proposal["changes"])
+            if b1.button(L(f"Apply plan ({n} changes)", f"اعمال برنامه ({n} تغییر)"), type="primary", disabled=not n):
+                run(lambda: apply_schedule(store, proposal["changes"]), L("Week planned.", "هفته برنامه‌ریزی شد."))
                 state["week_proposal"] = None
                 st.rerun()
-            if b2.button("Dismiss"):
+            if b2.button(L("Dismiss", "بستن")):
                 state["week_proposal"] = None
                 st.rerun()
 
     cols = st.columns(7, gap="small")
+    weekend = store.weekend()
     for col, day in zip(cols, week["days"]):
         with col:
             is_today = day["date"] == ctx["today"]
-            st.markdown(f'<div class="day-head{" today" if is_today else ""}">{esc(day["weekday"][:3])}'
-                        f'<span>{int(day["date"][8:])}</span></div>', unsafe_allow_html=True)
-            pills = [f'<div class="pill event">{esc(ev["start_time"])} {esc(ev["title"])}</div>' for ev in day["events"]]
-            pills += [f'<div class="pill{" done" if t["status"] == "completed" else ""}">{esc(t["title"])}</div>'
+            wd = _date.fromisoformat(day["date"]).weekday()
+            name = WEEKDAYS_FA[wd] if is_fa() else WEEKDAYS_EN[wd][:3]
+            st.markdown(f'<div class="day-head{" today" if is_today else ""}{" off" if wd in weekend else ""}">{esc(name)}'
+                        f'<span>{esc(short_day(day["date"], lang(), cal()))}</span></div>', unsafe_allow_html=True)
+            pills = [f'<div class="pill event">{esc(N(ev["start_time"]))} {esc(ev["title"])}</div>' for ev in day["events"]]
+            pills += [f'<div class="pill{" done" if t["status"] == "completed" else ""}">'
+                      f'{esc(N(t["scheduled_time"]) + " ") if t.get("scheduled_time") else ""}{esc(t["title"])}</div>'
                       for t in day["tasks"] if t["id"] not in moving]
             pills += [f'<div class="pill new">{esc(title)}</div>' for title in new_by_day.get(day["date"], [])]
-            pills += [f'<div class="pill due">Due: {esc(t["title"])}</div>' for t in day["due"]]
-            st.markdown("".join(pills) or '<div class="pill" style="color:var(--moss)">Free</div>',
-                        unsafe_allow_html=True)
+            pills += [f'<div class="pill due">{esc(L("Due: ", "مهلت: "))}{esc(t["title"])}</div>' for t in day["due"]]
+            free = L("Day off", "تعطیل") if wd in weekend else L("Free", "آزاد")
+            st.markdown("".join(pills) or f'<div class="pill" style="color:var(--moss)">{esc(free)}</div>', unsafe_allow_html=True)
 
     if review:
         r = store.weekly_review(state["week_start"])
         with st.container(border=True):
-            st.subheader("Looking back")
-            st.write(f"You finished {len(r['completed'])} task{'s' if len(r['completed']) != 1 else ''}"
-                     f" and wrote {len(r['notes'])} note{'s' if len(r['notes']) != 1 else ''}.")
+            st.subheader(L("Looking back", "مرور هفته"))
+            nc, nn = len(r["completed"]), len(r["notes"])
+            st.write(L(f"You finished {nc} {plural(nc, 'task', 'tasks')} and wrote {nn} {plural(nn, 'note', 'notes')}.",
+                       f"{nc} کار را تمام کردید و {nn} یادداشت نوشتید."))
+            sep = "، " if is_fa() else ", "
             if r["missed_deadlines"]:
-                st.write("Still open past their deadline: " + ", ".join(t["title"] for t in r["missed_deadlines"]))
+                st.write(L("Still open past their deadline: ", "هنوز باز، با مهلت گذشته: ") + sep.join(t["title"] for t in r["missed_deadlines"]))
             if r["next_focus"]:
-                st.write("Worth focusing on next: " + ", ".join(t["title"] for t in r["next_focus"]))
+                st.write(L("Worth focusing on next: ", "بهتر است بعد سراغ این‌ها بروید: ") + sep.join(t["title"] for t in r["next_focus"]))
 
-    with st.expander("Add a meeting or appointment"):
+    with st.expander(L("Add a meeting or appointment", "افزودن جلسه یا قرار")):
         with st.form("add-event", clear_on_submit=True):
-            c1, c2, c3, c4 = st.columns([2, 1.3, 1, 1])
-            title = c1.text_input("What")
-            date = c2.date_input("Date", format="YYYY-MM-DD")
-            start = c3.time_input("Starts", value=datetime.strptime("10:00", "%H:%M").time(), step=900)
-            end = c4.time_input("Ends", value=datetime.strptime("11:00", "%H:%M").time(), step=900)
-            if st.form_submit_button("Add to calendar", type="primary") and title.strip():
-                run(lambda: store.create_event(title, date.isoformat(), start.strftime("%H:%M"),
-                                               end.strftime("%H:%M")), "Added to your calendar.")
+            title = st.text_input(L("What", "عنوان"))
+            when = date_field(L("Date", "تاریخ"), ctx["today"], key="ev-date", optional=False)
+            c3, c4 = st.columns(2)
+            start = c3.time_input(L("Starts", "شروع"), value=datetime.strptime("10:00", "%H:%M").time(), step=900)
+            end = c4.time_input(L("Ends", "پایان"), value=datetime.strptime("11:00", "%H:%M").time(), step=900)
+            if st.form_submit_button(L("Add to calendar", "افزودن"), type="primary") and title.strip():
+                run(lambda: store.create_event(title, when, start.strftime("%H:%M"), end.strftime("%H:%M")),
+                    L("Added to your calendar.", "به تقویم اضافه شد."))
                 st.rerun()
 
 
 def page_notes(store, ctx):
     state = st.session_state
-    st.title("Notes")
+    st.title(L("Notes", "یادداشت‌ها"))
     left, right = st.columns([1, 2.2], gap="large")
     with left:
-        if st.button("New note", type="primary", use_container_width=True):
-            made = run(lambda: store.create_note(title="Untitled note", content=""))
+        if st.button(L("New note", "یادداشت تازه"), type="primary", use_container_width=True):
+            made = run(lambda: store.create_note(title=L("Untitled note", "یادداشت بی‌عنوان"), content=""))
             if made:
                 state["open_note"] = made["id"]
                 st.rerun()
-        q = st.text_input("Find a note", placeholder="Search notes", label_visibility="collapsed")
+        q = st.text_input(L("Find a note", "پیدا کردن یادداشت"), placeholder=L("Search notes", "جستجو در یادداشت‌ها"),
+                          label_visibility="collapsed")
         notes = store.list_notes(query=q.strip() or None)
         if not notes:
-            st.caption("No notes yet." if not q else "No notes match that.")
+            st.caption(L("No notes yet.", "هنوز یادداشتی ندارید.") if not q else L("No notes match that.", "یادداشتی پیدا نشد."))
         for n in notes:
-            label = n["title"][:42] or "Untitled"
-            if st.button(label, key=f"note-{n['id']}", use_container_width=True,
+            if st.button(n["title"][:42] or L("Untitled", "بی‌عنوان"), key=f"note-{n['id']}", use_container_width=True,
                          type="primary" if state.get("open_note") == n["id"] else "secondary"):
                 state["open_note"] = n["id"]
                 st.rerun()
     with right:
         if not state.get("open_note"):
-            empty("Pick a note on the left, or start a new one. Ideas you capture on Today land here too.")
+            empty(L("Pick a note on the left, or start a new one. Ideas you capture on Today land here too.",
+                    "یک یادداشت را انتخاب کنید یا یادداشت تازه بسازید. ایده‌هایی که در «امروز» می‌نویسید هم این‌جا می‌آیند."))
             return
         try:
-            note = store.get_note(state["open_note"])
+            n = store.get_note(state["open_note"])
         except ValidationError:
             state["open_note"] = None
             st.rerun()
-        with st.form(f"note-{note['id']}"):
-            title = st.text_input("Title", note["title"])
-            content = st.text_area("Note", note["content"], height=320,
-                                   placeholder="Write freely. Lines with actions can become tasks.")
-            c1, c2, c3, _ = st.columns([1, 1.2, 1, 2])
-            if c1.form_submit_button("Save", type="primary"):
-                run(lambda: store.update_note(note["id"], title=title, content=content), "Note saved.")
+        with st.form(f"note-{n['id']}"):
+            title = st.text_input(L("Title", "عنوان"), n["title"])
+            content = st.text_area(L("Note", "متن"), n["content"], height=320,
+                                   placeholder=L("Write freely. Lines with actions can become tasks.",
+                                                 "آزادانه بنویسید. جمله‌هایی که کار هستند می‌توانند کار شوند."))
+            c1, c2, c3, _ = st.columns([0.9, 1.5, 0.9, 2], gap="small")
+            if c1.form_submit_button(L("Save", "ذخیره"), type="primary"):
+                run(lambda: store.update_note(n["id"], title=title, content=content), L("Note saved.", "یادداشت ذخیره شد."))
                 st.rerun()
-            if c2.form_submit_button("Make tasks from this"):
-                store.update_note(note["id"], title=title, content=content)
+            if c2.form_submit_button(L("Make tasks from this", "ساختن کار از این متن")):
+                store.update_note(n["id"], title=title, content=content)
                 parsed = parse_capture(content, ctx["today"])
                 for t in parsed["tasks"]:
                     run(lambda t=t: store.create_task(title=t["title"], due_date=t.get("due_date"),
                                                       scheduled_date=t.get("scheduled_date")))
-                flash(f"Made {len(parsed['tasks'])} task{'s' if len(parsed['tasks']) != 1 else ''} from this note."
-                      if parsed["tasks"] else "I didn't find any actions in this note.",
-                      "success" if parsed["tasks"] else "info")
+                k = len(parsed["tasks"])
+                flash(L(f"Made {k} {plural(k, 'task', 'tasks')} from this note.", f"{k} کار از این یادداشت ساخته شد.")
+                      if k else L("I didn't find any actions in this note.", "در این یادداشت کاری پیدا نکردم."),
+                      "success" if k else "info")
                 st.rerun()
-            if c3.form_submit_button("Delete"):
-                run(lambda: store.delete_note(note["id"]), "Note deleted.")
+            if c3.form_submit_button(L("Delete", "حذف")):
+                run(lambda: store.delete_note(n["id"]), L("Note deleted.", "یادداشت حذف شد."))
                 state["open_note"] = None
                 st.rerun()
-        st.caption(f"Last edited {esc(note['updated_at'][:16].replace('T', ' '))}")
+        edited = n["updated_at"][:10]
+        st.caption(L(f"Last edited {D(edited, with_year=True)} at {n['updated_at'][11:16]}",
+                     f"آخرین ویرایش {D(edited, with_year=True)} ساعت {n['updated_at'][11:16]}"))
 
 
 def page_projects(store, ctx):
-    st.title("Projects")
+    st.title(L("Projects", "پروژه‌ها"))
     with st.form("add-project", clear_on_submit=True):
-        c1, c2, c3 = st.columns([3, 1.4, 1], vertical_alignment="bottom")
-        name = c1.text_input("New project", placeholder="For example: Kitchen renovation")
-        due = c2.date_input("Due", value=None, format="YYYY-MM-DD")
-        if c3.form_submit_button("Create", type="primary", use_container_width=True) and name.strip():
-            run(lambda: store.create_project(name, due_date=due.isoformat() if due else None), "Project created.")
+        name = st.text_input(L("New project", "پروژهٔ تازه"), placeholder=L("For example: Kitchen renovation", "مثلاً: بازسازی آشپزخانه"))
+        due = date_field(L("Due", "مهلت"), key="proj-due")
+        if st.form_submit_button(L("Create", "ساختن"), type="primary") and name.strip():
+            run(lambda: store.create_project(name, due_date=due), L("Project created.", "پروژه ساخته شد."))
             st.rerun()
     projects = store.list_projects()
     if not projects:
-        empty("Projects group related tasks and notes. Create one above, or add a project name when you make a task.")
+        empty(L("Projects group related tasks and notes. Create one above, or add a project name when you make a task.",
+                "پروژه کارها و یادداشت‌های مرتبط را کنار هم نگه می‌دارد. از بالا یکی بسازید یا هنگام ساختن کار، نام پروژه را بنویسید."))
     for p in projects:
         with st.container(border=True):
-            c1, c2 = st.columns([4, 1], vertical_alignment="center")
+            c1, c2 = st.columns([4, 1.2], vertical_alignment="center")
             c1.markdown(f"### {esc(p['name'])}", unsafe_allow_html=True)
-            c2.markdown(f'<div style="text-align:right;color:var(--moss)">{p["done_count"]} of {p["task_count"]} done</div>',
-                        unsafe_allow_html=True)
+            done_n, total_n = p["done_count"], p["task_count"]
+            progress_text = L(f"{done_n} of {total_n} done", f"{done_n} از {total_n} انجام شد")
+            c2.markdown(f'<div style="text-align:end;color:var(--moss)">{esc(progress_text)}</div>', unsafe_allow_html=True)
             st.progress(p["progress"] / 100)
             if p["due_date"]:
-                st.caption(f"Due {friendly_date(p['due_date'], ctx['today'])}")
-            with st.expander("Tasks and notes"):
+                st.caption(L(f"Due {friendly_date(p['due_date'], ctx['today'])}", f"مهلت: {friendly_date(p['due_date'], ctx['today'])}"))
+            with st.expander(L("Tasks and notes", "کارها و یادداشت‌ها")):
                 full = store.get_project(p["id"])
                 if not full["tasks"] and not full["notes"]:
-                    st.caption("Nothing in this project yet.")
+                    st.caption(L("Nothing in this project yet.", "هنوز چیزی در این پروژه نیست."))
                 for t in full["tasks"]:
                     task_row(store, ctx, t, f"pr{p['id']}", show_project=False)
-                for n in full["notes"]:
-                    st.caption(f"Note: {n['title']}")
-                if st.button("Delete project", key=f"delp-{p['id']}"):
-                    run(lambda: store.delete_project(p["id"]), "Project deleted. Its tasks and notes are kept.")
+                for nt in full["notes"]:
+                    st.caption(L(f"Note: {nt['title']}", f"یادداشت: {nt['title']}"))
+                if st.button(L("Delete project", "حذف پروژه"), key=f"delp-{p['id']}"):
+                    run(lambda: store.delete_project(p["id"]), L("Project deleted. Its tasks and notes are kept.",
+                                                                  "پروژه حذف شد. کارها و یادداشت‌هایش باقی ماندند."))
                     st.rerun()
 
 
 def page_goals(store, ctx):
-    st.title("Goals")
-    st.markdown('<p class="section-note">Big things you\'re working towards. With the AI connected, ask the '
-                'assistant to break a goal into projects and tasks.</p>', unsafe_allow_html=True)
+    st.title(L("Goals", "هدف‌ها"))
+    note(L("Big things you're working towards. With the AI connected, ask the assistant to break a goal into projects and tasks.",
+           "کارهای بزرگی که به سمتشان می‌روید. با وصل کردن هوش مصنوعی، از دستیار بخواهید هدف را به پروژه و کار تقسیم کند."))
     with st.form("add-goal", clear_on_submit=True):
-        c1, c2, c3 = st.columns([3, 1.4, 1], vertical_alignment="bottom")
-        title = c1.text_input("New goal", placeholder="For example: Learn Python in 3 months")
-        deadline = c2.date_input("By", value=None, format="YYYY-MM-DD")
-        if c3.form_submit_button("Create", type="primary", use_container_width=True) and title.strip():
-            run(lambda: store.create_goal(title, deadline=deadline.isoformat() if deadline else None), "Goal created.")
+        title = st.text_input(L("New goal", "هدف تازه"), placeholder=L("For example: Learn Python in 3 months", "مثلاً: یادگیری پایتون در ۳ ماه"))
+        deadline = date_field(L("By", "تا تاریخ"), key="goal-by")
+        if st.form_submit_button(L("Create", "ساختن"), type="primary") and title.strip():
+            run(lambda: store.create_goal(title, deadline=deadline), L("Goal created.", "هدف ساخته شد."))
             st.rerun()
     goals = store.list_goals()
     if not goals:
-        empty("No goals yet.")
+        empty(L("No goals yet.", "هنوز هدفی ندارید."))
     for g in goals:
         with st.container(border=True):
             c1, c2 = st.columns([4, 1], vertical_alignment="center")
             c1.markdown(f"### {esc(g['title'])}", unsafe_allow_html=True)
-            c2.markdown(f'<div style="text-align:right;color:var(--moss)">{g["progress"]}%</div>',
-                        unsafe_allow_html=True)
+            c2.markdown(f'<div style="text-align:end;color:var(--moss)">{esc(N(g["progress"]))}٪</div>' if is_fa()
+                        else f'<div style="text-align:end;color:var(--moss)">{g["progress"]}%</div>', unsafe_allow_html=True)
             st.progress(g["progress"] / 100)
-            bits = [f"{g['done_count']} of {g['task_count']} tasks done"]
+            bits = [L(f"{g['done_count']} of {g['task_count']} tasks done", f"{g['done_count']} از {g['task_count']} کار انجام شد")]
             if g["deadline"]:
-                bits.append(f"by {friendly_date(g['deadline'], ctx['today'])}")
-            st.caption(", ".join(bits))
+                bits.append(L(f"by {friendly_date(g['deadline'], ctx['today'])}", f"تا {friendly_date(g['deadline'], ctx['today'])}"))
+            st.caption(("، " if is_fa() else ", ").join(bits))
             for p in g["projects"]:
                 st.markdown(f"- {esc(p['name'])}", unsafe_allow_html=True)
-            if st.button("Delete goal", key=f"delg-{g['id']}"):
-                run(lambda: store.delete_goal(g["id"]), "Goal deleted.")
+            if st.button(L("Delete goal", "حذف هدف"), key=f"delg-{g['id']}"):
+                run(lambda: store.delete_goal(g["id"]), L("Goal deleted.", "هدف حذف شد."))
                 st.rerun()
 
 
 def page_search(store, ctx):
-    st.title("Search")
-    q = st.text_input("Search everything", placeholder="A word, a person, a project…", label_visibility="collapsed")
+    st.title(L("Search", "جستجو"))
+    q = st.text_input(L("Search everything", "جستجو در همه چیز"), placeholder=L("A word, a person, a project…", "یک کلمه، یک نام، یک پروژه…"),
+                      label_visibility="collapsed")
     if not q.strip():
-        empty("Search looks through tasks, notes, projects and goals. Searching a project's name "
-              "also shows everything inside it.")
+        empty(L("Search looks through tasks, notes, projects and goals. Searching a project's name also shows everything inside it.",
+                "در کارها، یادداشت‌ها، پروژه‌ها و هدف‌ها جستجو می‌کند. جستجوی نام یک پروژه، همهٔ محتوای آن را هم نشان می‌دهد."))
         return
     found = store.search(q)
-    total = len(found["tasks"]) + len(found["notes"]) + len(found["projects"]) + len(found["goals"])
-    if not total:
-        empty(f"Nothing matches \"{q}\". Try a shorter word.")
+    if not (found["tasks"] or found["notes"] or found["projects"] or found["goals"]):
+        empty(L(f'Nothing matches "{q}". Try a shorter word.', f"چیزی با «{q}» پیدا نشد. کلمهٔ کوتاه‌تری امتحان کنید."))
         return
     if found["projects"] or found["goals"]:
-        st.subheader("Projects and goals")
+        st.subheader(L("Projects and goals", "پروژه‌ها و هدف‌ها"))
         for p in found["projects"]:
-            st.markdown(f"- Project: **{esc(p['name'])}**", unsafe_allow_html=True)
+            st.markdown(f"- {esc(L('Project', 'پروژه'))}: **{esc(p['name'])}**", unsafe_allow_html=True)
         for g in found["goals"]:
-            st.markdown(f"- Goal: **{esc(g['title'])}**", unsafe_allow_html=True)
+            st.markdown(f"- {esc(L('Goal', 'هدف'))}: **{esc(g['title'])}**", unsafe_allow_html=True)
     if found["tasks"]:
-        st.subheader("Tasks")
+        st.subheader(L("Tasks", "کارها"))
         for t in found["tasks"]:
             task_row(store, ctx, t, "se")
     if found["notes"]:
-        st.subheader("Notes")
+        st.subheader(L("Notes", "یادداشت‌ها"))
         for n in found["notes"]:
             with st.expander(n["title"]):
-                st.write(n["content"] or "(empty)")
+                st.write(n["content"] or L("(empty)", "(خالی)"))
+
+
+def notification_permission_widget():
+    """A small in-page control: ask the browser for permission and send a test."""
+    t = {"allow": L("Allow notifications", "اجازهٔ اعلان"), "test": L("Send a test", "ارسال آزمایشی"),
+         "on": L("Notifications are on in this browser.", "اعلان‌ها در این مرورگر فعال است."),
+         "off": L("Not allowed yet.", "هنوز اجازه داده نشده."),
+         "blocked": L("Blocked. Allow notifications for this site in your browser settings.",
+                      "مسدود است. در تنظیمات مرورگر، اعلان این سایت را مجاز کنید."),
+         "none": L("This browser can't show notifications here. Use the calendar option below.",
+                   "این مرورگر این‌جا اعلان نشان نمی‌دهد. از گزینهٔ تقویم در پایین استفاده کنید."),
+         "title": L("Planner", "برنامه‌ریز"), "body": L("Reminders will look like this.", "یادآورها این شکلی هستند.")}
+    direction = "rtl" if is_fa() else "ltr"
+    texts = json.dumps(t, ensure_ascii=False).replace("<", "\\u003c")
+    components.html(f"""
+<div dir="{direction}" style="font-family: Vazirmatn, 'Nunito Sans', system-ui, sans-serif; color:#1F3A34; font-size:14px;
+     display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:2px">
+  <button id="a" style="background:#2F7D6D;color:#fff;border:0;border-radius:10px;padding:8px 14px;font:inherit;font-weight:600;cursor:pointer">{esc(t['allow'])}</button>
+  <button id="b" style="background:#fff;color:#1F3A34;border:1px solid #DCE3DE;border-radius:10px;padding:8px 14px;font:inherit;cursor:pointer">{esc(t['test'])}</button>
+  <span id="s" style="color:#5E726C"></span>
+</div>
+<script>
+var P = window.parent, T = {texts};
+function show() {{
+  var s = document.getElementById('s');
+  if (!('Notification' in P)) {{ s.textContent = T.none; return; }}
+  var p = P.Notification.permission;
+  s.textContent = p === 'granted' ? T.on : p === 'denied' ? T.blocked : T.off;
+  document.getElementById('a').style.display = p === 'granted' ? 'none' : '';
+}}
+document.getElementById('a').onclick = function () {{
+  if ('Notification' in P) P.Notification.requestPermission().then(show);
+}};
+document.getElementById('b').onclick = function () {{
+  if ('Notification' in P && P.Notification.permission === 'granted') {{
+    try {{ new P.Notification(T.title, {{ body: T.body }}); }} catch (e) {{ document.getElementById('s').textContent = T.none; }}
+  }} else show();
+}};
+show();
+</script>""", height=56)
 
 
 def page_settings(store, ctx, user):
-    st.title("Settings")
-    tab_ai, tab_day, tab_account = st.tabs(["AI assistant", "Your day", "Account"])
+    st.title(L("Settings", "تنظیمات"))
+    tab_lang, tab_remind, tab_ai, tab_day, tab_account = st.tabs(
+        [L("Language and calendar", "زبان و تقویم"), L("Reminders", "یادآورها"), L("AI assistant", "هوش مصنوعی"),
+         L("Your day", "روز شما"), L("Account", "حساب")])
+
+    with tab_lang:
+        s = store.get_settings()
+        with st.form("prefs"):
+            new_lang = st.radio(L("Language", "زبان"), ["en", "fa"], index=["en", "fa"].index(s["lang"]),
+                                format_func=lambda v: "English" if v == "en" else "فارسی", horizontal=True)
+            new_cal = st.radio(L("Calendar", "تقویم"), ["gregorian", "jalali"], index=["gregorian", "jalali"].index(s["calendar"]),
+                               format_func=lambda v: L("Gregorian", "میلادی") if v == "gregorian" else L("Jalali (Solar Hijri)", "شمسی (جلالی)"),
+                               horizontal=True)
+            st.caption(L("With the Jalali calendar, weeks start on Saturday and Friday is the day off.",
+                         "در تقویم شمسی، هفته از شنبه شروع می‌شود و جمعه تعطیل است."))
+            if st.form_submit_button(L("Save", "ذخیره"), type="primary"):
+                run(lambda: store.update_preferences(lang=new_lang, calendar=new_cal))
+                st.session_state["lang"], st.session_state["calendar"] = new_lang, new_cal
+                st.session_state["day_plan"] = None
+                st.session_state["week_proposal"] = None
+                flash("تنظیمات ذخیره شد." if new_lang == "fa" else "Saved.")
+                st.rerun()
+
+    with tab_remind:
+        s = store.get_settings()
+        st.markdown(f"**{esc(L('Reminders in this browser', 'یادآور در همین مرورگر'))}**")
+        note(L("While Planner is open in a tab, you'll get a notification before each meeting and each planned task that has a time. "
+               "Works in desktop browsers; on phones, use the calendar option below.",
+               "تا وقتی برنامه‌ریز در یک زبانه باز است، قبل از هر جلسه و هر کار ساعت‌دار اعلان می‌گیرید. "
+               "در مرورگر رایانه کار می‌کند؛ روی گوشی از گزینهٔ تقویم در پایین استفاده کنید."))
+        notification_permission_widget()
+        with st.form("reminders"):
+            enabled = st.checkbox(L("Remind me before meetings and planned tasks", "قبل از جلسه‌ها و کارهای برنامه‌ریزی‌شده یادآوری کن"),
+                                  value=s["remind_enabled"] == "1")
+            leads = [5, 10, 15, 30, 60]
+            cur = int(s.get("remind_lead") or 10)
+            lead = st.selectbox(L("How long before", "چقدر زودتر"), leads, index=leads.index(cur) if cur in leads else 1,
+                                format_func=lambda v: minutes_text(v))
+            morning_on = st.checkbox(L("A short summary of the day each morning", "خلاصهٔ کوتاه روز، هر صبح"), value=bool(s.get("remind_morning")))
+            morning = st.time_input(L("At", "ساعت"), value=datetime.strptime(s.get("remind_morning") or "08:30", "%H:%M").time(), step=900)
+            if st.form_submit_button(L("Save reminders", "ذخیرهٔ یادآورها"), type="primary"):
+                run(lambda: store.update_reminders(enabled, lead, morning.strftime("%H:%M") if morning_on else ""),
+                    L("Reminders saved.", "یادآورها ذخیره شد."))
+                st.rerun()
+        st.caption(L("Tasks get a time when you save a day plan, or when you set one while editing a task.",
+                     "کارها وقتی ساعت می‌گیرند که برنامهٔ روز را ثبت کنید یا هنگام ویرایش کار ساعت بگذارید."))
+        st.markdown(f"**{esc(L('Reminders on your phone, even when Planner is closed', 'یادآور روی گوشی، حتی وقتی برنامه‌ریز بسته است'))}**")
+        note(L("Download your plan as a calendar file and open it on your phone. Your calendar app adds each item with an alarm "
+               "and reminds you on time. Download again after you change your plan; items update instead of duplicating.",
+               "برنامه‌تان را به‌صورت فایل تقویم بگیرید و روی گوشی باز کنید. برنامهٔ تقویم هر مورد را با هشدار اضافه می‌کند "
+               "و به‌موقع یادآوری می‌کند. بعد از تغییر برنامه دوباره بگیرید؛ موارد به‌روز می‌شوند و تکراری نمی‌شوند."))
+        up = store.upcoming(ctx["today"])
+        items = plan_items(up["events"], up["tasks"])
+        c1, c2 = st.columns([1.5, 3], vertical_alignment="center")
+        c1.download_button(L("Today and tomorrow (.ics)", "امروز و فردا (.ics)"),
+                           build_ics(items, int(s.get("remind_lead") or 10), L("Planner", "برنامه‌ریز"), str(store.uid)),
+                           file_name=f"planner-{ctx['today']}.ics", mime="text/calendar", use_container_width=True,
+                           disabled=not items)
+        c2.caption(L(f"{len(items)} {plural(len(items), 'item', 'items')} with a time.", f"{len(items)} مورد ساعت‌دار.")
+                   if items else L("Nothing with a time yet. Save a day plan first.", "هنوز مورد ساعت‌داری نیست. اول برنامهٔ روز را ثبت کنید."))
 
     with tab_ai:
         cfg = resolve_config(store)
         locked = cfg["source"] == "env"
         if locked:
-            st.info("The AI is set up by whoever runs this app, so there's nothing to change here.")
+            st.info(L("The AI is set up by whoever runs this app, so there's nothing to change here.",
+                      "هوش مصنوعی را مدیر این برنامه تنظیم کرده و این‌جا چیزی برای تغییر نیست."))
         ids = list(PRESETS)
-        chosen = st.selectbox("Provider", ids, index=ids.index(cfg["provider"]),
+        chosen = st.selectbox(L("Provider", "سرویس"), ids, index=ids.index(cfg["provider"]),
                               format_func=lambda i: PRESETS[i]["label"], disabled=locked)
         preset = PRESETS[chosen]
         help_text = preset["help"]
         if preset["key_url"]:
-            help_text += f" [{'Get a free key' if 'free' in preset['label'] else 'Get a key' if preset['needs_key'] else 'Download it'}]({preset['key_url']})"
+            help_text += f" [{L('Get a key', 'گرفتن کلید')}]({preset['key_url']})"
         st.caption(help_text)
         same = chosen == cfg["provider"]
         key = model = base_url = ""
         if preset["needs_key"]:
-            key = st.text_input("API key", type="password", disabled=locked,
-                                placeholder=f"Saved key ending {cfg['key_hint']}. Leave blank to keep it."
-                                if (same and cfg["api_key"]) else "Paste your key")
+            key = st.text_input(L("API key", "کلید API"), type="password", disabled=locked,
+                                placeholder=L(f"Saved key ending {cfg['key_hint']}. Leave blank to keep it.",
+                                              f"کلید ذخیره‌شده ({cfg['key_hint']}). برای نگه داشتن، خالی بگذارید.")
+                                if (same and cfg["api_key"]) else L("Paste your key", "کلید را این‌جا بچسبانید"))
         if chosen != "none":
-            model = st.text_input("Model", value=cfg["model"] if same else preset["model"], disabled=locked)
+            model = st.text_input(L("Model", "مدل"), value=cfg["model"] if same else preset["model"], disabled=locked)
         if chosen == "openai_compatible":
-            base_url = st.text_input("Service URL", value=cfg["base_url"] if same else "", placeholder="https://…",
-                                     disabled=locked)
-        c1, c2, _ = st.columns([0.7, 1.3, 5], gap="small")
-        if c1.button("Save", type="primary", disabled=locked):
-            if run(lambda: save_config(store, chosen, key, model, base_url), "AI settings saved."):
+            base_url = st.text_input(L("Service URL", "نشانی سرویس"), value=cfg["base_url"] if same else "",
+                                     placeholder="https://…", disabled=locked)
+        c1, c2, _ = st.columns([0.8, 1.4, 5], gap="small")
+        if c1.button(L("Save", "ذخیره"), type="primary", disabled=locked):
+            if run(lambda: save_config(store, chosen, key, model, base_url), L("AI settings saved.", "تنظیمات ذخیره شد.")):
                 st.rerun()
-        if c2.button("Test connection"):
-            with st.spinner("Testing…"):
+        if c2.button(L("Test connection", "آزمایش اتصال")):
+            with st.spinner(L("Testing…", "در حال آزمایش…")):
                 ok, message = test_connection(resolve_config(store))
             (st.success if ok else st.error)(message)
         if cfg["enabled"]:
-            st.caption(f"On: {cfg['label']}, model {cfg['model']}.")
-        elif cfg["problem"]:
-            st.caption(cfg["problem"])
-        st.caption("Your key is kept with your account and isn't shown to anyone else.")
+            st.caption(L(f"On: {cfg['label']}, model {cfg['model']}.", f"فعال: {cfg['label']}، مدل {cfg['model']}."))
+        st.caption(L("Your key is kept with your account and isn't shown to anyone else.",
+                     "کلید شما فقط در حساب خودتان نگه داشته می‌شود."))
 
     with tab_day:
-        settings = store.get_settings()
+        s = store.get_settings()
         with st.form("hours"):
-            st.markdown("**Working hours**")
-            st.caption("Plans are built inside these hours.")
+            st.markdown(f"**{esc(L('Working hours', 'ساعت کاری'))}**")
+            st.caption(L("Plans are built inside these hours.", "برنامه‌ها در همین ساعت‌ها چیده می‌شوند."))
             c1, c2 = st.columns(2)
-            start = c1.time_input("Start", value=datetime.strptime(settings["workday_start"], "%H:%M").time(), step=900)
-            end = c2.time_input("End", value=datetime.strptime(settings["workday_end"], "%H:%M").time(), step=900)
-            if st.form_submit_button("Save hours", type="primary"):
-                run(lambda: store.update_hours(start.strftime("%H:%M"), end.strftime("%H:%M")), "Working hours saved.")
+            start = c1.time_input(L("Start", "شروع"), value=datetime.strptime(s["workday_start"], "%H:%M").time(), step=900)
+            end = c2.time_input(L("End", "پایان"), value=datetime.strptime(s["workday_end"], "%H:%M").time(), step=900)
+            if st.form_submit_button(L("Save hours", "ذخیرهٔ ساعت‌ها"), type="primary"):
+                run(lambda: store.update_hours(start.strftime("%H:%M"), end.strftime("%H:%M")), L("Working hours saved.", "ساعت کاری ذخیره شد."))
                 st.session_state["day_plan"] = None
                 st.rerun()
-        st.markdown("**What the assistant remembers about you**")
+        st.markdown(f"**{esc(L('What the assistant remembers about you', 'آنچه دستیار دربارهٔ شما به یاد دارد'))}**")
         memories = store.list_memories()
         if not memories:
-            st.caption("Nothing yet. When you mention a lasting fact, like a thesis deadline, it's kept here.")
+            st.caption(L("Nothing yet. When you mention a lasting fact, like a thesis deadline, it's kept here.",
+                         "هنوز چیزی نیست. وقتی نکتهٔ ماندگاری بگویید، مثل مهلت پایان‌نامه، این‌جا نگه داشته می‌شود."))
         for m in memories:
             c1, c2 = st.columns([5, 1])
             c1.write(m["fact"])
-            if c2.button("Forget", key=f"mem-{m['id']}"):
-                run(lambda: store.forget(m["id"]), "Forgotten.")
+            if c2.button(L("Forget", "فراموش کن"), key=f"mem-{m['id']}"):
+                run(lambda: store.forget(m["id"]), L("Forgotten.", "فراموش شد."))
                 st.rerun()
 
     with tab_account:
         acc = Accounts(conn())
         with st.form("name"):
-            name = st.text_input("Your name", user["name"])
-            st.caption(f"Signed in as {user['email']}")
-            if st.form_submit_button("Save name", type="primary"):
-                run(lambda: acc.update_name(user["id"], name), "Name saved.")
+            name = st.text_input(L("Your name", "نام شما"), user["name"])
+            st.caption(L(f"Signed in as {user['email']}", f"وارد شده با {user['email']}"))
+            if st.form_submit_button(L("Save name", "ذخیرهٔ نام"), type="primary"):
+                run(lambda: acc.update_name(user["id"], name), L("Name saved.", "نام ذخیره شد."))
                 st.rerun()
         with st.form("password", clear_on_submit=True):
-            st.markdown("**Change password**")
-            current = st.text_input("Current password", type="password")
-            new = st.text_input("New password", type="password", help="At least 8 characters.")
-            again = st.text_input("New password again", type="password")
-            if st.form_submit_button("Change password"):
+            st.markdown(f"**{esc(L('Change password', 'تغییر رمز'))}**")
+            current = st.text_input(L("Current password", "رمز فعلی"), type="password")
+            new = st.text_input(L("New password", "رمز تازه"), type="password", help=L("At least 8 characters.", "دست‌کم ۸ نویسه."))
+            again = st.text_input(L("New password again", "تکرار رمز تازه"), type="password")
+            if st.form_submit_button(L("Change password", "تغییر رمز")):
                 if new != again:
-                    st.error("The new passwords don't match.")
+                    st.error(L("The new passwords don't match.", "دو رمز تازه یکی نیستند."))
                 elif run(lambda: acc.change_password(user["id"], current, new) or True,
-                         "Password changed. Other devices have been signed out."):
+                         L("Password changed. Other devices have been signed out.", "رمز تغییر کرد. دستگاه‌های دیگر از حساب خارج شدند.")):
                     st.session_state.pop("token", None)
                     st.rerun()
-        with st.expander("Delete account"):
-            st.write("This permanently deletes your account and every task, note, project and goal in it.")
+        with st.expander(L("Delete account", "حذف حساب")):
+            st.write(L("This permanently deletes your account and every task, note, project and goal in it.",
+                       "با این کار حساب شما و همهٔ کارها، یادداشت‌ها، پروژه‌ها و هدف‌هایش برای همیشه پاک می‌شود."))
             with st.form("delete", clear_on_submit=True):
-                pw = st.text_input("Enter your password to confirm", type="password")
-                sure = st.checkbox("I understand this can't be undone")
-                if st.form_submit_button("Delete my account"):
+                pw = st.text_input(L("Enter your password to confirm", "برای تأیید، رمزتان را وارد کنید"), type="password")
+                sure = st.checkbox(L("I understand this can't be undone", "می‌دانم این کار برگشت‌پذیر نیست"))
+                if st.form_submit_button(L("Delete my account", "حساب من را حذف کن")):
                     if not sure:
-                        st.error("Tick the box to confirm.")
+                        st.error(L("Tick the box to confirm.", "برای تأیید، گزینه را علامت بزنید."))
                     elif run(lambda: acc.delete(user["id"], pw) or True):
                         sign_out()
 
 
 def sidebar(store, user, ctx):
     with st.sidebar:
-        st.markdown('<p class="brand">Planner</p><p class="brand-sub">Your day, calmly planned</p>',
+        st.markdown(f'<p class="brand">{esc(L("Planner", "برنامه‌ریز"))}</p>'
+                    f'<p class="brand-sub">{esc(L("Your day, calmly planned", "روزتان، آرام و سنجیده"))}</p>',
                     unsafe_allow_html=True)
         initial = (user["name"] or user["email"])[:1].upper()
-        st.markdown(f'<div class="who"><span class="avatar">{esc(initial)}</span><div>{esc(user["name"] or "Welcome")}'
+        st.markdown(f'<div class="who"><span class="avatar">{esc(initial)}</span><div>{esc(user["name"] or L("Welcome", "خوش آمدید"))}'
                     f'<small>{esc(user["email"])}</small></div></div>', unsafe_allow_html=True)
-        inbox = len(store.list_inbox())
-        pending = len(store.open_pending())
-        badges = {"inbox": inbox, "assistant": pending}
+        badges = {"inbox": len(store.list_inbox()), "assistant": len(store.open_pending()),
+                  "shared": store.unread_count()}
 
         def label(key):
-            icon, text = PAGES[key]
+            icon, en, fa = PAGES[key]
             n = badges.get(key)
-            return f"{icon}  {text}" + (f"  ({n})" if n else "")
+            return f"{icon}  {fa if is_fa() else en}" + (f"  ({N(n)})" if n else "")
 
         st.radio("Go to", list(PAGES), key="page", format_func=label, label_visibility="collapsed")
         st.write("")
         cfg = resolve_config(store)
-        st.caption("AI: " + (cfg["label"].split(" (")[0] if cfg["enabled"] else "basic mode"))
-        if st.button("Sign out", use_container_width=True):
+        st.caption(L("AI: ", "هوش مصنوعی: ") + (cfg["label"].split(" (")[0] if cfg["enabled"] else L("basic mode", "حالت ساده")))
+        if st.button(L("Sign out", "خروج"), use_container_width=True):
             sign_out()
 
 
 def main():
     st.set_page_config(page_title="Planner", page_icon="☀️", layout="wide", initial_sidebar_state="auto")
-    st.markdown(CSS, unsafe_allow_html=True)
     load_secrets()
     restore_session()
-
     uid = st.session_state.get("uid")
+    if uid:
+        try:
+            user = Accounts(conn()).public(uid)
+        except ValidationError:  # account was deleted elsewhere
+            sign_out()
+            return
+        store = Store(conn(), uid)
+        prefs = store.get_settings()  # the account's saved choice wins once signed in
+        st.session_state["lang"], st.session_state["calendar"] = prefs["lang"], prefs["calendar"]
+    st.markdown(CSS, unsafe_allow_html=True)
+    if is_fa():
+        st.markdown(FA_CSS, unsafe_allow_html=True)
     if not uid:
         page_auth()
-        return
-    try:
-        user = Accounts(conn()).public(uid)
-    except ValidationError:  # account was deleted elsewhere
-        sign_out()
         return
     if st.session_state.get("set_cookie"):
         set_cookie(st.session_state.pop("set_cookie"))
 
     now = local_now()
     ctx = {"today": now.date().isoformat(), "now": now.strftime("%H:%M")}
-    store = Store(conn(), uid)
     st.session_state.setdefault("page", "today")
     sidebar(store, user, ctx)
     show_flashes()
@@ -3565,7 +4844,8 @@ def main():
      "inbox": lambda: page_inbox(store, ctx), "tasks": lambda: page_tasks(store, ctx),
      "calendar": lambda: page_week(store, ctx), "notes": lambda: page_notes(store, ctx),
      "projects": lambda: page_projects(store, ctx), "goals": lambda: page_goals(store, ctx),
-     "search": lambda: page_search(store, ctx), "settings": lambda: page_settings(store, ctx, user)}[page]()
+     "shared": lambda: page_shared(store, ctx), "search": lambda: page_search(store, ctx), "settings": lambda: page_settings(store, ctx, user)}[page]()
+    reminder_engine(store, ctx)
 
 
 if __name__ == "__main__":
